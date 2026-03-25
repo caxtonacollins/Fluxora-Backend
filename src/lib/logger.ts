@@ -20,12 +20,14 @@ export interface LogRecord {
 }
 
 function write(level: LogLevel, message: string, correlationId?: string, meta?: Record<string, unknown>): void {
+  // meta is spread first so core fields (timestamp, level, message, correlationId)
+  // always take precedence and cannot be overwritten by callers.
   const record: LogRecord = {
+    ...meta,
     timestamp: new Date().toISOString(),
     level,
     message,
     ...(correlationId !== undefined ? { correlationId } : {}),
-    ...meta,
   };
   const line = JSON.stringify(record) + '\n';
   if (level === 'error') {
