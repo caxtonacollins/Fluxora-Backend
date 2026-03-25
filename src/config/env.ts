@@ -36,6 +36,11 @@ export interface Config {
     jwtSecret: string;
     jwtExpiresIn: string;
 
+    // Request protection
+    maxRequestSizeBytes: number;
+    maxJsonDepth: number;
+    requestTimeoutMs: number;
+
     // Observability
     logLevel: 'debug' | 'info' | 'warn' | 'error';
     metricsEnabled: boolean;
@@ -75,6 +80,35 @@ function parseIntEnv(value: string | undefined, defaultValue: number, min?: numb
     }
 
     return parsed;
+}
+
+/**
+ * Parse and validate byte size environment variable (supports units: b, kb, mb)
+ */
+function parseBytesEnv(value: string | undefined, defaultBytes: number): number {
+    if (value === undefined) return defaultBytes;
+
+    const match = value.trim().match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?$/i);
+    if (!match) {
+        throw new ConfigError(`Invalid byte size format: ${value}. Use format like "10mb", "512kb", or "1024"`);
+    }
+
+    const num = parseFloat(match[1]);
+    const unit = (match[2] ?? 'b').toLowerCase();
+
+    const multipliers: Record<string, number> = {
+        b: 1,
+        kb: 1024,
+        mb: 1024 * 1024,
+        gb: 1024 * 1024 * 1024,
+    };
+
+    const bytes = num * (multipliers[unit] ?? 1);
+    if (bytes <= 0) {
+        throw new ConfigError(`Byte size must be positive: ${value}`);
+    }
+
+    return Math.floor(bytes);
 }
 
 /**
@@ -155,6 +189,10 @@ export function loadConfig(): Config {
 
         jwtSecret,
         jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '24h',
+
+        maxRequestSizeBytes: parseBytesEnv(process.env.MAX_REQUEST_SIZE, 1024 * 1024), // 1MB default
+        maxJsonDepth: parseIntEnv(process.env.MAX_JSON_DEPTH, 20, 1, 1000),
+        requestTimeoutMs: parseIntEnv(process.env.REQUEST_TIMEOUT_MS, 30000, 1000, 300000),
 
         logLevel: (process.env.LOG_LEVEL ?? 'info') as 'debug' | 'info' | 'warn' | 'error',
         metricsEnabled: parseBoolEnv(process.env.METRICS_ENABLED, true),
