@@ -5,7 +5,11 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
+    "dev": "tsx watch src/index.ts",
+    "k6:smoke": "k6 run -e PROFILE=smoke k6/main.js",
+    "k6:load": "k6 run -e PROFILE=load k6/main.js",
+    "k6:stress": "k6 run -e PROFILE=stress k6/main.js",
+    "k6:soak": "k6 run -e PROFILE=soak k6/main.js"
   },
   "dependencies": {
     "express": "^4.18.2"
