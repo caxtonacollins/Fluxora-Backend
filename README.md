@@ -113,9 +113,10 @@ API runs at [http://localhost:3000](http://localhost:3000).
 
 ### Scripts
 
-- `npm run dev` — Run with tsx watch (no build)
-- `npm run build` — Compile to `dist/`
-- `npm start` — Run compiled `dist/index.js`
+- `npm run dev` - run with tsx watch
+- `npm run build` - compile to `dist/`
+- `npm test` - run the HTTP error-handling tests
+- `npm start` - run compiled `dist/index.js`
 
 ## API overview
 
@@ -127,7 +128,7 @@ API runs at [http://localhost:3000](http://localhost:3000).
 | GET    | `/api/streams/:id` | Get one stream                                                                   |
 | POST   | `/api/streams`     | Create stream (body: sender, recipient, depositAmount, ratePerSecond, startTime) |
 
-All responses are JSON. Stream data is in-memory until you add PostgreSQL.
+Contract guarantees for this area:
 
 ## Operational Guidelines
 
@@ -143,7 +144,44 @@ All responses are JSON. Stream data is in-memory until you add PostgreSQL.
 ## Project structure
 ...
 
+This is sufficient for local diagnosis now. If Redis, PostgreSQL, Horizon RPC, or workers are added later, their outage classifications should be folded into the same logging pattern.
+
+### Verification evidence
+
+Automated tests in `src/app.test.ts` cover:
+
+- normalized `404` for unknown routes
+- normalized `400` for invalid JSON
+- normalized `413` for oversized payloads
+- normalized `400` for route validation failures
+- normalized `500` for unexpected exceptions
+
+Build verification:
+
+```bash
+npm test
+npm run build
 ```
+
+### Non-goals and follow-up work
+
+Intentionally deferred in this issue:
+
+- rate limiting implementation
+- duplicate-submission detection
+- persistence-backed failure classification
+- OpenAPI generation for error schemas
+
+Recommended follow-up issues:
+
+- add rate limiting that returns normalized `429` errors
+- add idempotency / duplicate-submission protection
+- publish OpenAPI schemas for the normalized error envelope
+- extend dependency-outage classification once real database / indexing integrations land
+
+## Project structure
+
+```text
 src/
   routes/     # health, streams
   index.ts    # Express app and server
@@ -271,13 +309,16 @@ Operators can diagnose load-test runs via:
 
 Optional:
 
-- `PORT` — Server port (default: 3000)
+- `PORT` - server port, default `3000`
 
-Later you can add `DATABASE_URL`, `REDIS_URL`, `HORIZON_URL`, `JWT_SECRET`, etc.
+Likely future additions:
+
+- `DATABASE_URL`
+- `REDIS_URL`
+- `HORIZON_URL`
+- `JWT_SECRET`
 
 ## Related repos
 
-- **fluxora-frontend** — Dashboard and recipient UI
-- **fluxora-contracts** — Soroban smart contracts
-
-Each is a separate Git repository.
+- `fluxora-frontend` - dashboard and recipient UI
+- `fluxora-contracts` - Soroban smart contracts
