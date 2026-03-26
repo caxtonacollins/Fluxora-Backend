@@ -11,7 +11,42 @@
  * - Public: PORT, API_VERSION
  * - Authenticated: DATABASE_URL, REDIS_URL
  * - Admin-only: JWT_SECRET, HORIZON_SECRET_KEY
+ * 
+ * Multi-network contract addresses:
+ * - STELLAR_NETWORK selects testnet or mainnet
+ * - CONTRACT_ADDRESS_STREAMING overrides the default per-network address
+ * - Defaults are well-known Fluxora contract addresses per network
  */
+
+/**
+ * Known Stellar network identifiers and their default passphrases + contract addresses.
+ * Operators may override contract addresses via CONTRACT_ADDRESS_* env vars.
+ */
+export const STELLAR_NETWORKS = {
+    testnet: {
+        passphrase: 'Test SDF Network ; September 2015',
+        horizonUrl: 'https://horizon-testnet.stellar.org',
+        // Placeholder — replace with deployed testnet contract ID
+        streamingContractAddress: 'TESTNET_STREAMING_CONTRACT_PLACEHOLDER',
+    },
+    mainnet: {
+        passphrase: 'Public Global Stellar Network ; September 2015',
+        horizonUrl: 'https://horizon.stellar.org',
+        // Placeholder — replace with deployed mainnet contract ID
+        streamingContractAddress: 'MAINNET_STREAMING_CONTRACT_PLACEHOLDER',
+    },
+} as const;
+
+export type StellarNetwork = keyof typeof STELLAR_NETWORKS;
+
+/**
+ * Contract addresses resolved for the active network.
+ * All fields are required — missing addresses cause a startup ConfigError.
+ */
+export interface ContractAddresses {
+    /** Soroban contract ID for the streaming contract */
+    streaming: string;
+}
 
 export interface Config {
     // Server
@@ -28,9 +63,11 @@ export interface Config {
     redisUrl: string;
     redisEnabled: boolean;
 
-    // Stellar
+    // Stellar — network-aware
+    stellarNetwork: StellarNetwork;
     horizonUrl: string;
     horizonNetworkPassphrase: string;
+    contractAddresses: ContractAddresses;
 
     // Security
     jwtSecret: string;
@@ -143,6 +180,40 @@ function validateUrl(url: string, name: string): string {
 }
 
 /**
+ * Resolve and validate the active Stellar network.
+ * STELLAR_NETWORK must be "testnet" or "mainnet"; defaults to "testnet".
+ * In production, mainnet is required unless explicitly overridden.
+ */
+function resolveNetwork(nodeEnv: string): StellarNetwork {
+    const raw = process.env.STELLAR_NETWORK ?? (nodeEnv === 'production' ? 'mainnet' : 'testnet');
+    if (raw !== 'testnet' && raw !== 'mainnet') {
+        throw new ConfigError(`STELLAR_NETWORK must be "testnet" or "mainnet", got "${raw}"`);
+    }
+    return raw;
+}
+
+/**
+ * Resolve contract addresses for the active network.
+ * Operators may override any address via CONTRACT_ADDRESS_STREAMING.
+ * Missing addresses in production cause a startup failure.
+ */
+function resolveContractAddresses(network: StellarNetwork, isProduction: boolean): ContractAddresses {
+    const defaults = STELLAR_NETWORKS[network];
+
+    const streaming = process.env.CONTRACT_ADDRESS_STREAMING ?? defaults.streamingContractAddress;
+
+    // In production, reject placeholder values — operators must supply real addresses
+    if (isProduction && streaming.includes('PLACEHOLDER')) {
+        throw new ConfigError(
+            'CONTRACT_ADDRESS_STREAMING must be set to a real contract address in production. ' +
+            'Set the CONTRACT_ADDRESS_STREAMING environment variable.'
+        );
+    }
+
+    return { streaming };
+}
+
+/**
  * Load and validate configuration from environment
  * Throws ConfigError if validation fails
  */
@@ -157,10 +228,20 @@ export function loadConfig(): Config {
         : validateUrl(process.env.DATABASE_URL ?? 'postgresql://localhost/fluxora', 'DATABASE_URL');
 
     const redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
+
+    // Resolve network first — Horizon URL and passphrase derive from it
+    const stellarNetwork = resolveNetwork(nodeEnv);
+    const networkDefaults = STELLAR_NETWORKS[stellarNetwork];
+
     const horizonUrl = validateUrl(
-        process.env.HORIZON_URL ?? 'https://horizon.stellar.org',
+        process.env.HORIZON_URL ?? networkDefaults.horizonUrl,
         'HORIZON_URL'
     );
+
+    const horizonNetworkPassphrase =
+        process.env.HORIZON_NETWORK_PASSPHRASE ?? networkDefaults.passphrase;
+
+    const contractAddresses = resolveContractAddresses(stellarNetwork, isProduction);
 
     const jwtSecret = isProduction
         ? requireEnv('JWT_SECRET')
@@ -169,8 +250,6 @@ export function loadConfig(): Config {
     if (jwtSecret.length < 32 && isProduction) {
         throw new ConfigError('JWT_SECRET must be at least 32 characters in production');
     }
-
-    const horizonNetworkPassphrase = process.env.HORIZON_NETWORK_PASSPHRASE ?? 'Test SDF Network ; September 2015';
 
     const config: Config = {
         port: parseIntEnv(process.env.PORT, 3000, 1, 65535),
@@ -184,8 +263,10 @@ export function loadConfig(): Config {
         redisUrl: validateUrl(redisUrl, 'REDIS_URL'),
         redisEnabled: parseBoolEnv(process.env.REDIS_ENABLED, true),
 
+        stellarNetwork,
         horizonUrl,
         horizonNetworkPassphrase,
+        contractAddresses,
 
         jwtSecret,
         jwtExpiresIn: process.env.JWT_EXPIRES_IN ?? '24h',
