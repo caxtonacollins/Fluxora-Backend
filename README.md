@@ -133,6 +133,52 @@ Intentional non-goals in this issue:
 - Exposing page tokens in any format other than the opaque cursor contract
 - Providing cross-process or post-restart idempotency durability
 
+### `/internal/indexer/contract-events` Durable Ingest Contract
+
+`POST /internal/indexer/contract-events` is the internal worker endpoint for persisting chain-derived contract events into the backend's durable event view. The endpoint is protected by `x-indexer-worker-token` and is intended for internal workers only.
+
+Service outcomes for this endpoint:
+
+- A `200` response means the submitted batch was durably persisted to the configured contract-event store before acknowledgement.
+- Duplicate deliveries are absorbed by `eventId` uniqueness; the response returns `duplicateCount` and `duplicateEventIds` instead of failing the retry.
+- Invalid batches fail atomically and write nothing.
+- If the durable store is degraded or unavailable, the service fails closed with `503 SERVICE_UNAVAILABLE` instead of acknowledging a non-durable write.
+
+Trust boundaries for this area:
+
+- Public internet clients may not ingest contract events.
+- Authenticated internal workers may submit contract-event batches only; they do not receive privileged database internals in responses.
+- Administrators observe dependency health, accepted and duplicate counts, and last failure details through `/health` and structured logs.
+- Authenticated partners and public clients may consume derived read models but may not bypass the worker trust boundary.
+
+Failure modes and client-visible behavior:
+
+- Missing or invalid `x-indexer-worker-token`: `401 UNAUTHORIZED`
+- Oversized payload (`>256 KiB`): `413 PAYLOAD_TOO_LARGE`
+- Too many events in one batch (`>100`) or invalid event schema: `400 VALIDATION_ERROR`
+- Duplicate `eventId` values within a single submitted batch: `409 CONFLICT`
+- Excessive ingest rate from one actor (`>30` requests per minute): `429 TOO_MANY_REQUESTS`
+- Durable store degraded or unavailable: `503 SERVICE_UNAVAILABLE`
+
+Operator notes:
+
+- `/health` reports the indexer dependency state, backing store kind, last successful ingest, last failure reason, and accepted and duplicate counters.
+- Correlate incidents with the response request or correlation ID plus the worker's event IDs.
+- Structured logs emit one line for batch persistence success and one for failure, including batch size, inserted count, duplicate count, and store kind.
+- The default runtime store in this repository is in-memory for local development and tests. Production should inject a Postgres-backed `ContractEventStore` so acknowledgements remain durable across restarts.
+
+Verification coverage:
+
+- `tests/indexer.test.ts` covers successful persistence, duplicate delivery, authentication failures, oversized payload rejection, malformed batches, dependency outage behavior, and rate limiting.
+- `tests/health.test.ts` verifies the indexer health block is exposed to operators.
+
+Intentional non-goals in this issue slice:
+
+- Running chain polling inside the HTTP process; the worker submits already-fetched events to this service
+- Secret rotation, mTLS, or multi-worker tenant auth beyond the shared internal worker token
+- Historical backfill orchestration and replay tooling
+- Automatic Postgres migrations or schema management
+
 #### Verification Commands
 
 ```bash
@@ -153,7 +199,8 @@ npm start
 
 - In-memory stream storage (production requires database integration)
 - No Stellar RPC integration (placeholder for chain interactions)
-- Rate limiting not implemented (future enhancement)
+- Stream idempotency remains process-local and is not durable across restarts
+- Indexer ingest uses an in-memory store in this repository unless a Postgres-backed store is injected at runtime
 
 ## What's in this repo
 
@@ -198,6 +245,7 @@ API runs at [http://localhost:3000](http://localhost:3000).
 | GET    | `/api/streams`     | List streams                                                                     |
 | GET    | `/api/streams/:id` | Get one stream                                                                   |
 | POST   | `/api/streams`     | Create stream (body: sender, recipient, depositAmount, ratePerSecond, startTime) |
+| POST   | `/internal/indexer/contract-events` | Internal worker batch ingest for durable contract-event persistence |
 
 All responses are JSON. Stream data is in-memory until you add PostgreSQL.
 
