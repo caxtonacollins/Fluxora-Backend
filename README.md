@@ -93,11 +93,45 @@ Operator notes:
 - `/health` only confirms process liveness today; pagination dependency health is surfaced by request logs and 503 responses.
 - Representative regression coverage lives in `tests/streams.test.ts`, including malformed cursor handling, deleted-cursor recovery, and dependency-unavailable behavior.
 
+### `/api/streams` POST Idempotency Contract
+
+`POST /api/streams` now requires an `Idempotency-Key` header for unsafe creation requests. The key is scoped to the normalized request payload: trimmed identities, validated decimal strings, and normalized time fields.
+
+Service outcomes for this endpoint:
+
+- The first successful request for a key creates exactly one stream and returns `201`.
+- Retrying the same key with the same normalized payload replays the original `201` response body and sets `Idempotency-Replayed: true`.
+- Reusing a key with a different payload returns `409 CONFLICT` and creates no new stream.
+- Invalid requests are rejected with `400` and do not reserve the key for future valid retries.
+- If the idempotency dependency is degraded, the service returns `503 SERVICE_UNAVAILABLE` rather than risking duplicate side effects.
+
+Trust boundaries for this area:
+
+- Public clients may submit create requests only when they provide a syntactically valid idempotency key.
+- Authenticated partners may safely retry after network uncertainty but may not reuse a key for a semantically different operation.
+- Administrators diagnose duplicate-delivery reports through request IDs, idempotency keys, and structured logs.
+- Internal workers may reconcile downstream effects, but they do not bypass the HTTP idempotency contract.
+
+Failure modes and client-visible behavior:
+
+- Missing or malformed `Idempotency-Key`: `400 VALIDATION_ERROR`
+- Invalid stream payload: `400 VALIDATION_ERROR`
+- Same key, different payload: `409 CONFLICT`
+- Idempotency dependency unavailable: `503 SERVICE_UNAVAILABLE`
+- Unexpected process error before a successful write is stored: `500 INTERNAL_ERROR`
+
+Operator notes:
+
+- Correlate retries using the request `requestId`, `Idempotency-Key`, and the `Idempotency-Replayed` response header.
+- Representative automated coverage lives in `tests/streams.test.ts` for first-write, replay, conflict, and dependency-unavailable paths.
+- The current implementation uses in-memory storage only, so idempotency guarantees last for the life of the process and not across restarts.
+
 Intentional non-goals in this issue:
 
 - Replacing the in-memory store with a durable database view
 - Adding authentication or role-based authorization to `/api/streams`
 - Exposing page tokens in any format other than the opaque cursor contract
+- Providing cross-process or post-restart idempotency durability
 
 #### Verification Commands
 
