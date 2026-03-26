@@ -15,9 +15,12 @@
 import express, { Request, Response, NextFunction } from 'express';
 import { streamsRouter } from './routes/streams.js';
 import { healthRouter } from './routes/health.js';
+import { authRouter } from './routes/auth.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { authenticate } from './middleware/auth.js';
 import { requestIdMiddleware, info, warn } from './utils/logger.js';
 
+const app = express();
 const PORT = process.env.PORT ?? 3000;
 
 // Trust boundary: Add request ID for tracing
@@ -26,6 +29,10 @@ app.use(requestIdMiddleware);
 // Trust boundary: Parse JSON with size limits
 app.use(express.json({ limit: '1mb' }));
 
+// Trust boundary: Authenticate via JWT (Optional)
+// All subsequent routes have access to req.user if a valid token is provided.
+app.use(authenticate);
+
 // Trust boundary: Log all requests
 app.use((req: Request, _res: Response, next: NextFunction) => {
   const requestId = (req as Request & { id?: string }).id;
@@ -33,6 +40,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
     method: req.method,
     path: req.path,
     requestId,
+    user: req.user?.address,
   });
   next();
 });
@@ -40,6 +48,9 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 // Mount health router for operational monitoring
 // Public: Anyone can check health (trust boundary: read-only)
 app.use('/health', healthRouter);
+
+// Mount auth router for session management
+app.use('/api/auth', authRouter);
 
 // Mount streams router for stream management
 // Note: In production, this should be protected by authentication

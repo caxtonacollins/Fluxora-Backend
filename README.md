@@ -30,8 +30,9 @@ All amounts crossing the chain/API boundary are serialized as **decimal strings*
 
 | Actor                  | Capabilities                               |
 | ---------------------- | ------------------------------------------ |
-| Public Clients         | Read streams, submit valid decimal strings |
-| Authenticated Partners | Create streams with validated amounts      |
+| Public Clients         | Read streams, health status                |
+| Authenticated Partners | Create streams, cancel existing streams     |
+| Dashboard Clients      | Obtain session JWT via Stellar address     |
 | Administrators         | Full access, diagnostic logging            |
 | Internal Workers       | Database operations, chain interactions    |
 
@@ -44,6 +45,8 @@ All amounts crossing the chain/API boundary are serialized as **decimal strings*
 | Precision overflow       | 400 with `DECIMAL_OUT_OF_RANGE`   |
 | Missing required field   | 400 with `VALIDATION_ERROR`       |
 | Stream not found         | 404 with `NOT_FOUND`              |
+| Missing/Invalid JWT      | 401 with `UNAUTHORIZED`           |
+| Insufficient Permissions | 403 with `FORBIDDEN`              |
 
 ### Operational Notes
 
@@ -123,9 +126,11 @@ API runs at [http://localhost:3000](http://localhost:3000).
 | ------ | ------------------ | -------------------------------------------------------------------------------- |
 | GET    | `/`                | API info                                                                         |
 | GET    | `/health`          | Health check                                                                     |
-| GET    | `/api/streams`     | List streams                                                                     |
-| GET    | `/api/streams/:id` | Get one stream                                                                   |
-| POST   | `/api/streams`     | Create stream (body: sender, recipient, depositAmount, ratePerSecond, startTime) |
+| GET    | `/api/streams`     | List streams (Public)                                                            |
+| GET    | `/api/streams/:id` | Get one stream (Public)                                                          |
+| POST   | `/api/streams`     | Create stream (Auth Required)                                                    |
+| DELETE | `/api/streams/:id` | Cancel stream (Auth Required)                                                    |
+| POST   | `/api/auth/session`| Create session (Public: address, role)                                           |
 
 All responses are JSON. Stream data is in-memory until you add PostgreSQL.
 
@@ -142,6 +147,8 @@ src/
 Optional:
 
 - `PORT` — Server port (default: 3000)
+- `JWT_SECRET` — Secret for signing session tokens (Required for production)
+- `LOG_LEVEL` — Logging verbosity (`ERROR`, `WARN`, `INFO`, `DEBUG`)
 
 Later you can add `DATABASE_URL`, `REDIS_URL`, `HORIZON_URL`, `JWT_SECRET`, etc.
 
