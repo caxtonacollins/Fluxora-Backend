@@ -1,11 +1,27 @@
 import { Router, Request, Response } from 'express';
-import { Logger } from '../config/logger.js';
-import { validateCreateStreamRequest, validateStreamId, ValidationError } from '../config/validation.js';
-import { successResponse, errorResponse } from '../utils/response.js';
+
+import {
+  validateDecimalString,
+  validateAmountFields,
+} from '../serialization/decimal.js';
+
+import {
+  ApiError,
+  ApiErrorCode,
+  notFound,
+  validationError,
+  asyncHandler,
+} from '../middleware/errorHandler.js';
+
+import { SerializationLogger, info, debug } from '../utils/logger.js';
+import { successResponse } from '../utils/response.js';
 
 export const streamsRouter = Router();
 
-// Placeholder: replace with DB and contract sync later
+// Amount fields that must be decimal strings per serialization policy
+const AMOUNT_FIELDS = ['depositAmount', 'ratePerSecond'] as const;
+
+// In-memory stream store (placeholder for DB integration)
 const streams: Array<{
   id: string;
   sender: string;
@@ -13,108 +29,189 @@ const streams: Array<{
   depositAmount: string;
   ratePerSecond: string;
   startTime: number;
+  endTime: number;
   status: string;
 }> = [];
 
 /**
- * GET /api/streams - List all streams
- *
- * Success: 200 { success: true, data: { streams: [...] }, meta }
+ * GET /api/streams
+ * List all streams
  */
-streamsRouter.get('/', (req: Request, res: Response) => {
-  const logger = req.app.locals.logger as Logger;
+streamsRouter.get(
+  '/',
+  asyncHandler(async (_req: Request, res: Response) => {
+    info('Listing all streams', { count: streams.length });
 
-  try {
-    logger.debug('Listing streams', { count: streams.length });
-    res.json(successResponse({ streams }));
-  } catch (err) {
-    logger.error('Failed to list streams', err as Error);
-    res.status(500).json(errorResponse('Failed to list streams', 'INTERNAL_ERROR'));
-  }
-});
+    res.json(
+      successResponse({
+        streams,
+        total: streams.length,
+      })
+    );
+  })
+);
 
 /**
- * GET /api/streams/:id - Get a single stream
- *
- * Success: 200 { success: true, data: { stream }, meta }
- * Not found: 404 { success: false, error, code }
- * Invalid ID: 400 { success: false, error, code }
+ * GET /api/streams/:id
+ * Get a single stream by ID
  */
-streamsRouter.get('/:id', (req: Request, res: Response) => {
-  const logger = req.app.locals.logger as Logger;
+streamsRouter.get(
+  '/:id',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
 
-  try {
-    const id = validateStreamId(req.params.id);
+    debug('Fetching stream', { id });
+
     const stream = streams.find((s) => s.id === id);
 
     if (!stream) {
-      logger.debug('Stream not found', { id });
-      return res.status(404).json(errorResponse('Stream not found', 'NOT_FOUND'));
+      throw notFound('Stream', id);
     }
 
-    logger.debug('Retrieved stream', { id });
     res.json(successResponse({ stream }));
-  } catch (err) {
-    if (err instanceof ValidationError) {
-      logger.warn('Invalid stream ID', { id: req.params.id, error: err.message });
-      return res.status(400).json(errorResponse(err.message, 'VALIDATION_ERROR', undefined, err.field));
-    }
-
-    logger.error('Failed to get stream', err as Error);
-    res.status(500).json(errorResponse('Failed to get stream', 'INTERNAL_ERROR'));
-  }
-});
+  })
+);
 
 /**
- * POST /api/streams - Create a new stream
- *
- * Request body:
- *   sender: string (Stellar address)
- *   recipient: string (Stellar address)
- *   depositAmount: string (stroops)
- *   ratePerSecond: string (stroops/second)
- *   startTime: number (Unix timestamp)
- *
- * Success: 201 { success: true, data: { stream }, meta }
- * Validation error: 400 { success: false, error, code, field? }
+ * POST /api/streams
+ * Create a new stream
  */
-streamsRouter.post('/', (req: Request, res: Response) => {
-  const logger = req.app.locals.logger as Logger;
+streamsRouter.post(
+  '/',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { sender, recipient, depositAmount, ratePerSecond, startTime, endTime } = req.body ?? {};
 
-  try {
-    const validated = validateCreateStreamRequest(req.body);
+    info('Creating new stream');
 
-    const id = `stream-${Date.now()}`;
+    // Validate required fields
+    if (typeof sender !== 'string' || sender.trim() === '') {
+      throw validationError('sender must be a non-empty string');
+    }
+
+    if (typeof recipient !== 'string' || recipient.trim() === '') {
+      throw validationError('recipient must be a non-empty string');
+    }
+
+    // Validate decimal amount fields
+    const amountValidation = validateAmountFields(
+      { depositAmount, ratePerSecond },
+      AMOUNT_FIELDS as unknown as string[]
+    );
+
+    if (!amountValidation.valid) {
+      for (const err of amountValidation.errors) {
+        SerializationLogger.validationFailed(
+          err.field || 'unknown',
+          err.rawValue,
+          err.code
+        );
+      }
+
+      throw new ApiError(
+        ApiErrorCode.VALIDATION_ERROR,
+        'Invalid decimal string format for amount fields',
+        400,
+        {
+          errors: amountValidation.errors.map((e) => ({
+            field: e.field,
+            code: e.code,
+            message: e.message,
+          })),
+        }
+      );
+    }
+
+    // Semantic validation
+    const deposit = validateDecimalString(depositAmount, 'depositAmount');
+    const rate = validateDecimalString(ratePerSecond, 'ratePerSecond');
+
+    const validatedDepositAmount = deposit.value!;
+    const validatedRatePerSecond = rate.value!;
+
+    if (parseFloat(validatedDepositAmount) <= 0) {
+      throw validationError('depositAmount must be greater than zero');
+    }
+
+    if (parseFloat(validatedRatePerSecond) < 0) {
+      throw validationError('ratePerSecond cannot be negative');
+    }
+
+    // Validate startTime
+    const validatedStartTime =
+      typeof startTime === 'number' && Number.isInteger(startTime) && startTime >= 0
+        ? startTime
+        : Math.floor(Date.now() / 1000);
+
+    // Validate endTime
+    const validatedEndTime =
+      typeof endTime === 'number' && Number.isInteger(endTime) && endTime >= 0
+        ? endTime
+        : 0;
+
+    // Create stream
+    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
     const stream = {
       id,
-      sender: validated.sender,
-      recipient: validated.recipient,
-      depositAmount: validated.depositAmount,
-      ratePerSecond: validated.ratePerSecond,
-      startTime: validated.startTime,
+      sender: sender.trim(),
+      recipient: recipient.trim(),
+      depositAmount: validatedDepositAmount,
+      ratePerSecond: validatedRatePerSecond,
+      startTime: validatedStartTime,
+      endTime: validatedEndTime,
       status: 'active',
     };
 
     streams.push(stream);
 
-    logger.info('Stream created', {
-      id,
-      sender: validated.sender,
-      recipient: validated.recipient,
-      depositAmount: validated.depositAmount,
-    });
+    SerializationLogger.amountSerialized(2);
+    info('Stream created', { id });
 
     res.status(201).json(successResponse({ stream }));
-  } catch (err) {
-    if (err instanceof ValidationError) {
-      logger.warn('Invalid stream creation request', {
-        field: err.field,
-        error: err.message,
-      });
-      return res.status(400).json(errorResponse(err.message, 'VALIDATION_ERROR', undefined, err.field));
+  })
+);
+
+/**
+ * DELETE /api/streams/:id
+ * Cancel a stream
+ */
+streamsRouter.delete(
+  '/:id',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    debug('Deleting stream', { id });
+
+    const index = streams.findIndex((s) => s.id === id);
+
+    if (index === -1) {
+      throw notFound('Stream', id);
     }
 
-    logger.error('Failed to create stream', err as Error);
-    res.status(500).json(errorResponse('Failed to create stream', 'INTERNAL_ERROR'));
-  }
-});
+    const stream = streams[index];
+
+    if (stream.status === 'cancelled') {
+      throw new ApiError(
+        ApiErrorCode.CONFLICT,
+        'Stream is already cancelled',
+        409,
+        { streamId: id }
+      );
+    }
+
+    if (stream.status === 'completed') {
+      throw new ApiError(
+        ApiErrorCode.CONFLICT,
+        'Cannot cancel a completed stream',
+        409,
+        { streamId: id }
+      );
+    }
+
+    streams[index] = { ...stream, status: 'cancelled' };
+
+    info('Stream cancelled', { id });
+
+    res.json(successResponse({ message: 'Stream cancelled', id }));
+  })
+);
