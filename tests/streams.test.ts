@@ -9,6 +9,7 @@
 
 import express from 'express';
 import request from 'supertest';
+import { getStreamById } from '../src/db/client.js';
 
 // Import the streams router directly - we'll need to export the streams array for testing
 import {
@@ -21,6 +22,10 @@ import {
 import { errorHandler } from '../src/middleware/errorHandler.js';
 import { requestIdMiddleware } from '../src/errors.js';
 import { correlationIdMiddleware } from '../src/middleware/correlationId.js';
+
+jest.mock('../src/db/client.js', () => ({
+  getStreamById: jest.fn(),
+}))
 
 // Create a minimal test app
 function createTestApp() {
@@ -478,7 +483,9 @@ describe('Streams API - Decimal String Serialization', () => {
         .expect(200);
 
       const deletedId = firstPage.body.streams[1].id;
-      const deletedIndex = streams.findIndex((stream) => stream.id === deletedId);
+      const deletedIndex = streams.findIndex(
+        (stream: any) => stream.id === deletedId
+      )
       streams.splice(deletedIndex, 1);
 
       const secondPage = await request(app)
@@ -548,14 +555,57 @@ describe('Streams API - Decimal String Serialization', () => {
   });
 
   describe('GET /api/streams/:id', () => {
+    beforeEach(() => {
+      jest.clearAllMocks()
+    })
+
+    it('should return 200 and the stream data if found in the database', async () => {
+      const mockStream = {
+        id: 'stream-123',
+        sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
+        recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
+        depositAmount: '100.0000000',
+        ratePerSecond: '0.0010000',
+        startTime: 1700000000,
+        endTime: 0,
+        status: 'active',
+      }
+
+      // Tell our mock DB to return the stream
+      ;(getStreamById as jest.Mock).mockResolvedValueOnce(mockStream)
+
+      const response = await request(app)
+        .get('/api/streams/stream-123')
+        .expect(200)
+
+      expect(response.body).toEqual(mockStream)
+      expect(getStreamById).toHaveBeenCalledWith('stream-123')
+    })
+
     it('should return 404 for non-existent stream', async () => {
+      // Tell our mock DB to return null (not found)
+      ;(getStreamById as jest.Mock).mockResolvedValueOnce(null)
+
       const response = await request(app)
         .get('/api/streams/non-existent-id')
-        .expect(404);
+        .expect(404)
 
-      expect(response.body.error.code).toBe('NOT_FOUND');
-    });
-  });
+      expect(response.body.error.code).toBe('NOT_FOUND')
+    })
+
+    it('should return 503 if the database query fails', async () => {
+      // Tell our mock DB to throw an error
+      ;(getStreamById as jest.Mock).mockRejectedValueOnce(
+        new Error('Connection timeout')
+      )
+
+      const response = await request(app)
+        .get('/api/streams/stream-123')
+        .expect(503)
+
+      expect(response.body.error.code).toBe('SERVICE_UNAVAILABLE')
+    })
+  })
 
   describe('DELETE /api/streams/:id', () => {
     it('should return 404 for non-existent stream', async () => {

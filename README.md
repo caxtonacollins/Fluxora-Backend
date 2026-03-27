@@ -374,6 +374,30 @@ Automated unit tests (`tests/db-ops.test.ts`) assert the boundaries of the `pg_d
 - **Intentionally deferred:** Automated scheduling (e.g., node-cron) is deferred until persistent volume claims (PVCs) or S3 streaming targets are provisioned in the deployment orchestration.
 - **Follow-up:** Add an S3 upload stream integration so dumps don't remain local to the container filesystem.
 
+## GET /api/streams/:id backed by database (Issue #15)
+
+### Service-level outcomes
+- The `/api/streams/:id` endpoint provides a durable, highly available read path for chain-derived stream state.
+- Values returned respect the Decimal String Serialization Policy to prevent precision loss.
+
+### Trust boundaries
+| Actor | Allowed | Not allowed |
+|-------|---------|-------------|
+| Public internet clients | Can query any known stream ID and receive normalized JSON. | Cannot modify stream state or execute unbounded DB queries (e.g., table scans). |
+| Internal workers / Indexer | Trusted to write accurate chain-derived data to the underlying `streams` table. | — |
+| Administrators / Operators | Monitor DB latency and connection pool health. | — |
+
+### Failure modes and client-visible behavior
+| Condition | Expected result | System Behavior |
+|-----------|-----------------|-----------------|
+| Valid stream ID exists | `200 OK` | Returns JSON payload with decimal strings. |
+| Stream ID does not exist | `404 Not Found` | Returns `{"error": "NOT_FOUND"}`. No DB locks held. |
+| Database connection drops | `503 Service Unavailable` | Returns `{"error": "SERVICE_UNAVAILABLE"}`. Logs the underlying `pg` error for operator triage. |
+
+### Operator observability and diagnostics
+- **Health Checks:** A `503` from this endpoint indicates pool exhaustion, network partition, or DB credentials failure. Cross-reference with `GET /health`.
+- **Diagnostics:** Look for `[GET /api/streams/:id] Database error:` in standard out. This will contain the raw `pg` driver stack trace.
+
 ## API overview
 
 | Method | Path | Description |

@@ -1,4 +1,5 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
+import { getStreamById } from '../db/client.js';
 import {
   validateDecimalString,
   validateAmountFields,
@@ -13,7 +14,7 @@ import {
   asyncHandler,
 } from '../middleware/errorHandler.js';
 import { requireAuth } from '../middleware/auth.js';
-import { SerializationLogger, info, debug } from '../utils/logger.js';
+import { SerializationLogger, info, debug, warn } from '../utils/logger.js';
 import { recordAuditEvent } from '../lib/auditLog.js';
 
 /**
@@ -228,23 +229,9 @@ import { recordAuditEvent } from '../lib/auditLog.js';
 
 export const streamsRouter = Router();
 
-// Amount fields that must be decimal strings per serialization policy
+// Amount fields that must be decimal strinET /:ids per serialization policy
 const AMOUNT_FIELDS = ['depositAmount', 'ratePerSecond'] as const;
-
-// In-memory stream store (placeholder for DB integration)
-export const streams: Array<{
-  id: string;
-  sender: string;
-  recipient: string;
-  depositAmount: string;
-  ratePerSecond: string;
-  startTime: number;
-  endTime: number;
-  status: string;
-}
-
-// In-memory stream store — placeholder until PostgreSQL integration lands
-const streams: Stream[] = [];
+export const streams: any[] = []
 
 type StreamsCursor = {
   v: 1;
@@ -508,9 +495,10 @@ streamsRouter.get(
     const normalizedStartIndex = startIndex === -1 ? sortedStreams.length : startIndex;
     const pageStreams = sortedStreams.slice(normalizedStartIndex, normalizedStartIndex + limit);
     const hasMore = normalizedStartIndex + pageStreams.length < sortedStreams.length;
-    const nextCursor = hasMore && pageStreams.length > 0
-      ? encodeCursor(pageStreams[pageStreams.length - 1].id)
-      : undefined;
+    const nextCursor =
+      hasMore && pageStreams.length > 0
+        ? encodeCursor(pageStreams[pageStreams.length - 1]!.id)
+        : undefined
 
     info('Listing streams with pagination', {
       cursorProvided: Boolean(cursor),
@@ -553,7 +541,7 @@ streamsRouter.get(
 
 /**
  * GET /api/streams/:id
- * Get a single stream by ID.
+ * Get a single stream by ID from the database.
  */
 streamsRouter.get(
   '/:id',
@@ -561,12 +549,25 @@ streamsRouter.get(
     const { id } = req.params;
     const requestId = (req as { id?: string }).id;
 
-    debug('Fetching stream', { id });
+    debug('Fetching stream from database', { id, requestId });
 
-    const stream = streams.find((s) => s.id === id);
-    if (!stream) throw notFound('Stream', id);
+    // Basic validation
+    if (!id || typeof id !== 'string') {
+       res.status(400).json({ error: { code: 'VALIDATION_ERROR', message: 'Stream ID is required' } });
+       return;
+    }
 
-    res.json(successResponse({ stream }));
+    try {
+      const stream = await getStreamById(id);
+      if (!stream) {
+        throw notFound('Stream', id);
+      }
+      res.json(stream);
+    } catch (error: any) {
+      if (error.name === 'ApiError') throw error; // Let the errorHandler catch 404s
+      warn('Database query failed', { id, error: error.message, requestId });
+      throw serviceUnavailable('Database query failed');
+    }
   })
 );
 
@@ -708,7 +709,12 @@ streamsRouter.delete(
 
     info('Stream cancelled', { id });
 
-    recordAuditEvent('STREAM_CANCELLED', 'stream', id, req.correlationId);
+    recordAuditEvent(
+      'STREAM_CANCELLED',
+      'stream',
+      id as string,
+      (req as any).correlationId || 'unknown'
+    )
 
     res.json({ message: 'Stream cancelled', id });
   })
