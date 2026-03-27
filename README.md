@@ -355,3 +355,125 @@ Likely future additions:
 
 - `fluxora-frontend` - dashboard and recipient UI
 - `fluxora-contracts` - Soroban smart contracts
+
+---
+
+## Runbook: RPC Provider Outage (Issue #55)
+
+### Overview
+
+The service wraps all Stellar RPC calls in a circuit breaker (`src/services/stellar-rpc.ts`). When the failure rate exceeds the threshold, the breaker trips to `OPEN` and calls are rejected immediately without hitting the provider. Read endpoints continue serving stale Postgres-cached data and set a `Warning` response header.
+
+### Circuit breaker configuration
+
+| Env var | Default | Description |
+|---|---|---|
+| `RPC_CB_FAILURE_THRESHOLD` | `5` | Failures within window before tripping |
+| `RPC_CB_WINDOW_MS` | `30000` | Rolling window for counting failures (ms) |
+| `RPC_CB_RESET_TIMEOUT_MS` | `60000` | Cool-off period before allowing a probe (ms) |
+| `RPC_TIMEOUT_MS` | `5000` | Per-call timeout (ms) |
+
+### Detection
+
+**1. Confirm the circuit is OPEN via logs:**
+
+```bash
+# Grep for circuit trip events
+grep '"event":"circuit_open"' /var/log/fluxora/app.log
+
+# Grep for individual RPC failures (includes HTTP status code and duration)
+grep '"event":"rpc_failure"' /var/log/fluxora/app.log | tail -20
+```
+
+Example log record emitted on each failure:
+```json
+{"event":"rpc_failure","operation":"getLatestLedger","errorCode":503,"durationMs":4821,"error":"503 Service Unavailable","level":"warn","message":"Stellar RPC call failed"}
+```
+
+Example log record when the breaker trips:
+```json
+{"event":"circuit_open","failureCount":5,"windowMs":30000,"level":"warn","message":"Stellar RPC circuit breaker tripped"}
+```
+
+**2. Confirm via the health endpoint:**
+
+```bash
+curl -s https://api.fluxora.io/health/ready | jq .dependencies.stellar_rpc
+# "unhealthy"
+```
+
+**3. Confirm clients are receiving the stale-data warning:**
+
+```bash
+curl -I https://api.fluxora.io/api/streams
+# Warning: 199 fluxora-backend "Stellar RPC unavailable - data may be stale"
+```
+
+### Mitigation
+
+**Switch to a backup RPC provider:**
+
+```bash
+# Update the env var and restart the service
+export STELLAR_RPC_URL=https://backup-rpc.stellar.org
+# or in your deployment config / secrets manager
+
+# Restart (example for systemd)
+systemctl restart fluxora-backend
+
+# Restart (example for Docker)
+docker restart fluxora-backend
+```
+
+**Manually reset the circuit breaker without restarting** (if the service exposes an admin endpoint — add one if needed):
+
+The `StellarRpcService.resetCircuit()` method resets the breaker to `CLOSED`. Wire it to an authenticated admin route to enable live recovery without a restart.
+
+**Tune the cool-off period for faster recovery:**
+
+```bash
+export RPC_CB_RESET_TIMEOUT_MS=10000   # 10s instead of 60s
+export RPC_CB_FAILURE_THRESHOLD=3      # trip faster during an incident
+```
+
+### Recovery verification
+
+After the provider returns or the backup URL is set:
+
+```bash
+# 1. Watch the health endpoint recover
+watch -n 5 'curl -s https://api.fluxora.io/health/ready | jq "{status,dependencies}"'
+
+# 2. Confirm no Warning header on reads
+curl -sI https://api.fluxora.io/api/streams | grep -i warning
+# (should be empty)
+
+# 3. Confirm circuit is CLOSED in logs
+grep '"event":"circuit_open"' /var/log/fluxora/app.log | tail -1
+# (timestamp should be old — no new trips)
+```
+
+### Data integrity: re-sync missed ledgers
+
+If ledgers were missed during the outage, trigger a manual re-sync once the RPC is healthy:
+
+```bash
+# 1. Identify the last successfully indexed ledger
+grep '"lastSuccessfulSyncAt"' /var/log/fluxora/app.log | tail -1
+
+# 2. Set the indexer to re-process from that checkpoint
+# (exact mechanism depends on the indexer worker implementation — see src/indexer/)
+# For now, restart the indexer worker with the checkpoint env var:
+export INDEXER_START_LEDGER=<last_known_good_sequence>
+systemctl restart fluxora-indexer
+
+# 3. Monitor indexer health
+curl -s https://api.fluxora.io/health | jq .indexer
+# Wait for status to return "healthy"
+```
+
+### Non-goals / follow-up
+
+- Automated failover to a backup RPC URL (requires DNS or load-balancer config)
+- Admin endpoint to reset the circuit breaker live
+- Ledger gap detection and automatic re-sync trigger
