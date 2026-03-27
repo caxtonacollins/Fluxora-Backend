@@ -10,15 +10,16 @@
 import express, { Application } from 'express';
 import request from 'supertest';
 
-// Import the streams router directly - we'll need to export the streams array for testing
 import { streamsRouter } from '../src/routes/streams.js';
 import { errorHandler } from '../src/middleware/errorHandler.js';
-import { requestIdMiddleware } from '../src/utils/logger.js';
+import { requestIdMiddleware } from '../src/errors.js';
+import { correlationIdMiddleware } from '../src/middleware/correlationId.js';
 
 // Create a minimal test app
 function createTestApp(): Application {
   const app = express();
   app.use(requestIdMiddleware);
+  app.use(correlationIdMiddleware);
   app.use(express.json());
   app.use('/api/streams', streamsRouter);
   app.use(errorHandler);
@@ -271,7 +272,7 @@ describe('Streams API - Decimal String Serialization', () => {
       it('should include requestId in error response', async () => {
         const response = await request(app)
           .post('/api/streams')
-          .set('X-Request-ID', 'test-request-123')
+          .set('x-correlation-id', 'test-request-123')
           .send({
             depositAmount: 'invalid',
             ratePerSecond: '1',

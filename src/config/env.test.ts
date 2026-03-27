@@ -6,16 +6,31 @@ import {
     resetConfig,
     ConfigError,
     Config,
-} from './env';
+} from './env.js';
 
 describe('Environment Configuration', () => {
+    let savedEnv: NodeJS.ProcessEnv;
+
     beforeEach(() => {
+        savedEnv = { ...process.env };
         resetConfig();
-        // Save original env
-        process.env.NODE_ENV = 'development';
+        process.env['NODE_ENV'] = 'development';
+        // Clear test-sensitive vars so defaults apply
+        delete process.env['PORT'];
+        delete process.env['DATABASE_URL'];
+        delete process.env['REDIS_URL'];
+        delete process.env['HORIZON_URL'];
+        delete process.env['JWT_SECRET'];
+        delete process.env['DATABASE_POOL_SIZE'];
+        delete process.env['DATABASE_CONNECTION_TIMEOUT'];
+        delete process.env['LOG_LEVEL'];
+        delete process.env['REDIS_ENABLED'];
+        delete process.env['METRICS_ENABLED'];
+        delete process.env['HORIZON_NETWORK_PASSPHRASE'];
     });
 
     afterEach(() => {
+        process.env = savedEnv;
         resetConfig();
     });
 
@@ -78,7 +93,7 @@ describe('Environment Configuration', () => {
         });
 
         it('should validate REDIS_URL format', () => {
-            process.env.REDIS_URL = 'invalid://url';
+            process.env['REDIS_URL'] = 'not a url at all :::';
             expect(() => loadConfig()).toThrow(ConfigError);
         });
 

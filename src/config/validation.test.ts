@@ -7,13 +7,16 @@ import {
     validateTimestamp,
     validateCreateStreamRequest,
     validateStreamId,
-} from './validation';
+} from './validation.js';
 
 describe('Validation Module', () => {
     describe('validateStellarAddress', () => {
+        // Valid Stellar public key: G + exactly 55 chars from [A-Z2-7]
+        const VALID_ADDR_A = 'G' + 'A'.repeat(55);
+        const VALID_ADDR_B = 'G' + 'B'.repeat(55);
+
         it('should accept valid Stellar address', () => {
-            const address = 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXNMWX5YSXF3YFQHF';
-            expect(validateStellarAddress(address)).toBe(address);
+            expect(validateStellarAddress(VALID_ADDR_A)).toBe(VALID_ADDR_A);
         });
 
         it('should reject empty address', () => {
@@ -122,9 +125,11 @@ describe('Validation Module', () => {
     });
 
     describe('validateCreateStreamRequest', () => {
+        const VALID_ADDR_A = 'G' + 'A'.repeat(55);
+        const VALID_ADDR_B = 'G' + 'B'.repeat(55);
         const validRequest = {
-            sender: 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXNMWX5YSXF3YFQHF',
-            recipient: 'GBBD47UZQ5CYVVEUVRYNQZX3UYXF3YFQHFGBRPYHIL2CI3WHZDTOOQFC6',
+            sender: VALID_ADDR_A,
+            recipient: VALID_ADDR_B,
             depositAmount: '1000000',
             ratePerSecond: '100',
             startTime: Math.floor(Date.now() / 1000) + 3600,
