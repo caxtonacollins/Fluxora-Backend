@@ -390,8 +390,9 @@ describe('Streams API - Decimal String Serialization', () => {
 
       expect(response.body.streams).toBeDefined();
       expect(Array.isArray(response.body.streams)).toBe(true);
-      expect(response.body.total).toBeDefined();
-      expect(typeof response.body.total).toBe('number');
+      expect(response.body.has_more).toBeDefined();
+      expect(typeof response.body.has_more).toBe('boolean');
+      expect(response.body.total).toBeUndefined();
       expect(response.body.streams.length).toBeGreaterThanOrEqual(0);
     });
 
@@ -401,7 +402,8 @@ describe('Streams API - Decimal String Serialization', () => {
         .expect(200);
 
       expect(response.body.streams.length).toBe(3);
-      expect(response.body.total).toBe(3);
+      expect(response.body.has_more).toBe(false);
+      expect(response.body.total).toBeUndefined();
       expect(response.body.next_cursor).toBeUndefined();
     });
 
@@ -411,8 +413,18 @@ describe('Streams API - Decimal String Serialization', () => {
         .expect(200);
 
       expect(response.body.streams.length).toBe(2);
-      expect(response.body.total).toBe(3);
+      expect(response.body.has_more).toBe(true);
+      expect(response.body.total).toBeUndefined();
       expect(response.body.next_cursor).toBeDefined();
+    });
+
+    it('should return total only when include_total=true', async () => {
+      const response = await request(app)
+        .get('/api/streams?include_total=true')
+        .expect(200);
+
+      expect(response.body.total).toBe(3);
+      expect(response.body.has_more).toBe(false);
     });
 
     it('should support cursor pagination', async () => {
@@ -421,6 +433,7 @@ describe('Streams API - Decimal String Serialization', () => {
         .expect(200);
 
       expect(firstPage.body.streams.length).toBe(2);
+      expect(firstPage.body.has_more).toBe(true);
       expect(firstPage.body.next_cursor).toBeDefined();
 
       const secondPage = await request(app)
@@ -428,7 +441,33 @@ describe('Streams API - Decimal String Serialization', () => {
         .expect(200);
 
       expect(secondPage.body.streams.length).toBe(1);
+      expect(secondPage.body.has_more).toBe(false);
+      expect(secondPage.body.total).toBeUndefined();
       expect(secondPage.body.next_cursor).toBeUndefined();
+    });
+
+    it('should treat total as response-time metadata instead of a cursor snapshot guarantee', async () => {
+      const firstPage = await request(app)
+        .get('/api/streams?limit=2&include_total=true')
+        .expect(200);
+
+      expect(firstPage.body.total).toBe(3);
+      expect(firstPage.body.next_cursor).toBeDefined();
+
+      await postStream(app, {
+        sender: 'GCSX5XXXXXXXXXXXXXXXXXXXXXXX',
+        recipient: 'GDRX5XXXXXXXXXXXXXXXXXXXXXXX',
+        depositAmount: '4000.0000000',
+        ratePerSecond: '0.0000464',
+      }).expect(201);
+
+      const secondPage = await request(app)
+        .get(`/api/streams?cursor=${firstPage.body.next_cursor}&limit=2&include_total=true`)
+        .expect(200);
+
+      expect(secondPage.body.streams.length).toBe(2);
+      expect(secondPage.body.total).toBe(4);
+      expect(secondPage.body.has_more).toBe(false);
     });
 
     it('should resume from the encoded sort key when the cursor record disappears', async () => {
@@ -475,6 +514,14 @@ describe('Streams API - Decimal String Serialization', () => {
     it('should reject invalid cursor', async () => {
       const response = await request(app)
         .get('/api/streams?cursor=invalid-cursor')
+        .expect(400);
+
+      expect(response.body.error.code).toBe('VALIDATION_ERROR');
+    });
+
+    it('should reject invalid include_total values', async () => {
+      const response = await request(app)
+        .get('/api/streams?include_total=maybe')
         .expect(400);
 
       expect(response.body.error.code).toBe('VALIDATION_ERROR');

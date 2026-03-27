@@ -30,6 +30,8 @@ import { SerializationLogger, info, debug } from '../utils/logger.js';
  *       Service-level outcomes:
  *       - A successful page is a stable prefix of the current in-process stream view.
  *       - Replaying the same cursor is safe and does not create duplicate records within a page.
+ *       - Cursor traversal guarantees forward progress by sort key; aggregate totals are optional
+ *         metadata and are not part of the cursor consistency contract.
  *       - If the last-seen stream disappears between requests, the cursor still resumes after
  *         the encoded sort key instead of failing as stale.
  *       - If the listing dependency is unavailable, the service fails closed with 503.
@@ -58,6 +60,15 @@ import { SerializationLogger, info, debug } from '../utils/logger.js';
  *           maximum: 100
  *           default: 50
  *         description: Maximum number of streams to return (1-100, default 50)
+ *       - name: include_total
+ *         in: query
+ *         required: false
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *         description: |
+ *           When true, include `total` as the count of matching streams visible at the time of
+ *           this response. This count is informational only and may change between cursor requests.
  *     responses:
  *       200:
  *         description: Paginated list of streams
@@ -70,9 +81,12 @@ import { SerializationLogger, info, debug } from '../utils/logger.js';
  *                   type: array
  *                   items:
  *                     $ref: '#/components/schemas/Stream'
+ *                 has_more:
+ *                   type: boolean
+ *                   description: Whether another page is currently available after this one
  *                 total:
  *                   type: integer
- *                   description: Total number of streams in the current list view
+ *                   description: Optional count of matching streams at response time when `include_total=true`
  *                 next_cursor:
  *                   type: string
  *                   description: Opaque cursor for the next page (omitted if no more results)
@@ -427,6 +441,26 @@ function parseCursor(cursorParam: unknown): StreamsCursor | undefined {
   return decodeCursor(cursorParam);
 }
 
+function parseIncludeTotal(includeTotalParam: unknown): boolean {
+  if (includeTotalParam === undefined) {
+    return false;
+  }
+
+  if (Array.isArray(includeTotalParam) || typeof includeTotalParam !== 'string') {
+    throw validationError('include_total must be true or false');
+  }
+
+  if (includeTotalParam === 'true') {
+    return true;
+  }
+
+  if (includeTotalParam === 'false') {
+    return false;
+  }
+
+  throw validationError('include_total must be true or false');
+}
+
 function parseIdempotencyKey(headerValue: unknown): string {
   if (Array.isArray(headerValue) || typeof headerValue !== 'string') {
     throw validationError('Idempotency-Key header is required for unsafe POST operations');
@@ -539,6 +573,7 @@ streamsRouter.get(
     const requestId = (req as { id?: string }).id;
     const limit = parseLimit(req.query.limit);
     const cursor = parseCursor(req.query.cursor);
+    const includeTotal = parseIncludeTotal(req.query.include_total);
 
     if (streamListingDependency.state !== 'healthy') {
       warn('Stream listing dependency unavailable', {
@@ -562,10 +597,12 @@ streamsRouter.get(
 
     info('Listing streams with pagination', {
       cursorProvided: Boolean(cursor),
+      includeTotal,
       limit,
       returned: pageStreams.length,
       hasMore,
-      total: sortedStreams.length,
+      totalIncluded: includeTotal,
+      total: includeTotal ? sortedStreams.length : undefined,
       requestId,
     });
     debug('Streams page computed', {
@@ -577,12 +614,17 @@ streamsRouter.get(
 
     const response: {
       streams: typeof pageStreams;
-      total: number;
+      has_more: boolean;
+      total?: number;
       next_cursor?: string;
     } = {
       streams: pageStreams,
-      total: sortedStreams.length,
+      has_more: hasMore,
     };
+
+    if (includeTotal) {
+      response.total = sortedStreams.length;
+    }
 
     if (nextCursor) {
       response.next_cursor = nextCursor;
