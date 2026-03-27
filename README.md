@@ -398,6 +398,28 @@ Automated unit tests (`tests/db-ops.test.ts`) assert the boundaries of the `pg_d
 - **Health Checks:** A `503` from this endpoint indicates pool exhaustion, network partition, or DB credentials failure. Cross-reference with `GET /health`.
 - **Diagnostics:** Look for `[GET /api/streams/:id] Database error:` in standard out. This will contain the raw `pg` driver stack trace.
 
+## GET /api/streams filters: status, recipient, sender (Issue #14)
+
+### Service-level outcomes
+- Integrators and finance reviewers can deterministically filter the stream index by `status`, `sender`, and `recipient` addresses.
+- Filtering is applied prior to cursor-based pagination to guarantee consistent, traversable result sets.
+
+### Trust boundaries
+| Actor | Allowed | Not allowed |
+|-------|---------|-------------|
+| Public internet clients | Can filter public streams by valid addresses and statuses. | Cannot bypass pagination limits or execute wildcard/regex searches. |
+| Internal workers / Operators | Full access to filter across all streams for reconciliation. | — |
+
+### Failure modes and client-visible behavior
+| Condition | Expected result | System Behavior |
+|-----------|-----------------|-----------------|
+| Invalid Stellar Address Format | `400 Bad Request` | Fails fast with `VALIDATION_ERROR` indicating exactly which field failed the Regex check. |
+| Invalid Status Enum | `400 Bad Request` | Rejects unknown statuses (e.g., `pending`) to prevent cache poisoning or DB errors. |
+| Valid filters match no records | `200 OK` | Returns an empty `streams: []` array, not a 404, preserving API list semantics. |
+
+### Operator observability and diagnostics
+- Filter parameters are logged alongside `requestId` to help diagnose user reports of "missing streams" (usually caused by a typo in the recipient query).
+
 ## API overview
 
 | Method | Path | Description |

@@ -469,7 +469,7 @@ function fingerprintCreateStreamInput(input: NormalizedCreateStreamInput): strin
 
 /**
  * GET /api/streams
- * List streams with cursor-based pagination
+ * List streams with cursor-based pagination and filters
  */
 streamsRouter.get(
   '/',
@@ -479,15 +479,39 @@ streamsRouter.get(
     const cursor = parseCursor(req.query.cursor);
     const includeTotal = parseIncludeTotal(req.query.include_total);
 
+    // Extract filters
+    const status = req.query.status as string | undefined;
+    const sender = req.query.sender as string | undefined;
+    const recipient = req.query.recipient as string | undefined;
+
     if (streamListingDependency.state !== 'healthy') {
-      warn('Stream listing dependency unavailable', {
-        dependency: 'stream-list-view',
-        requestId,
-      });
-      throw serviceUnavailable('Stream list is temporarily unavailable. Retry when dependency health is restored.');
+      warn('Stream listing dependency unavailable', { dependency: 'stream-list-view', requestId });
+      throw serviceUnavailable('Stream list is temporarily unavailable.');
     }
 
-    const sortedStreams = [...streams].sort((a, b) => a.id.localeCompare(b.id));
+    // Filter Validation
+    if (status && !['active', 'cancelled', 'completed'].includes(status)) {
+      throw validationError('Invalid status filter', [{ field: 'status', message: 'Must be active, cancelled, or completed' }]);
+    }
+    
+    const stellarAddressRegex = /^G[A-Z2-7]{55}$/;
+    if (sender && !stellarAddressRegex.test(sender)) {
+      throw validationError('Invalid sender address format', [{ field: 'sender', message: 'Must be a valid Stellar public key starting with G' }]);
+    }
+    if (recipient && !stellarAddressRegex.test(recipient)) {
+      throw validationError('Invalid recipient address format', [{ field: 'recipient', message: 'Must be a valid Stellar public key starting with G' }]);
+    }
+
+    // Apply Filters
+    let filteredStreams = [...streams];
+    if (status) filteredStreams = filteredStreams.filter(s => s.status === status);
+    if (sender) filteredStreams = filteredStreams.filter(s => s.sender === sender);
+    if (recipient) filteredStreams = filteredStreams.filter(s => s.recipient === recipient);
+
+    // Sort the filtered list for pagination
+    const sortedStreams = filteredStreams.sort((a, b) => a.id.localeCompare(b.id));
+    
+    // ... [KEEP YOUR EXISTING PAGINATION LOGIC FROM HERE DOWN] ...
     const startIndex = cursor
       ? sortedStreams.findIndex((stream) => stream.id > cursor.lastId)
       : 0;

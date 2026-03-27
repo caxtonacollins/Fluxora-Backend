@@ -552,6 +552,93 @@ describe('Streams API - Decimal String Serialization', () => {
         .set('X-Request-ID', 'test-123')
         .expect(200);
     });
+
+    describe('filtering', () => {
+      beforeEach(async () => {
+        // Clear and re-seed specific streams for filtering
+        streams.length = 0
+        streams.push(
+          {
+            id: '1',
+            status: 'active',
+            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXA',
+            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXB',
+            depositAmount: '100',
+            ratePerSecond: '1',
+            startTime: 0,
+            endTime: 0,
+          },
+          {
+            id: '2',
+            status: 'completed',
+            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXA',
+            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXC',
+            depositAmount: '200',
+            ratePerSecond: '2',
+            startTime: 0,
+            endTime: 0,
+          },
+          {
+            id: '3',
+            status: 'active',
+            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXD',
+            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXB',
+            depositAmount: '300',
+            ratePerSecond: '3',
+            startTime: 0,
+            endTime: 0,
+          }
+        )
+      })
+
+      it('should filter by status', async () => {
+        const response = await request(app)
+          .get('/api/streams?status=active')
+          .expect(200)
+        expect(response.body.streams).toHaveLength(2)
+        expect(
+          response.body.streams.every((s: any) => s.status === 'active')
+        ).toBe(true)
+      })
+
+      it('should filter by sender', async () => {
+        const response = await request(app)
+          .get('/api/streams?sender=GCSX2XXXXXXXXXXXXXXXXXXXXXXA')
+          .expect(200)
+        expect(response.body.streams).toHaveLength(2)
+      })
+
+      it('should filter by recipient', async () => {
+        const response = await request(app)
+          .get('/api/streams?recipient=GDRX2XXXXXXXXXXXXXXXXXXXXXXC')
+          .expect(200)
+        expect(response.body.streams).toHaveLength(1)
+        expect(response.body.streams[0].id).toBe('2')
+      })
+
+      it('should combine filters correctly', async () => {
+        const response = await request(app)
+          .get(
+            '/api/streams?status=active&recipient=GDRX2XXXXXXXXXXXXXXXXXXXXXXB'
+          )
+          .expect(200)
+        expect(response.body.streams).toHaveLength(2)
+      })
+
+      it('should return 400 for invalid status', async () => {
+        const response = await request(app)
+          .get('/api/streams?status=invalid_state')
+          .expect(400)
+        expect(response.body.error.code).toBe('VALIDATION_ERROR')
+      })
+
+      it('should return 400 for invalid sender address', async () => {
+        const response = await request(app)
+          .get('/api/streams?sender=invalid-address')
+          .expect(400)
+        expect(response.body.error.code).toBe('VALIDATION_ERROR')
+      })
+    })
   });
 
   describe('GET /api/streams/:id', () => {
