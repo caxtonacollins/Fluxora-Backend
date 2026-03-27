@@ -11,6 +11,7 @@ import {
   validationError,
   asyncHandler,
 } from '../middleware/errorHandler.js';
+import { requireAuth } from '../middleware/auth.js';
 import { SerializationLogger, info, debug } from '../utils/logger.js';
 
 /**
@@ -278,6 +279,7 @@ streamsRouter.get(
  */
 streamsRouter.post(
   '/',
+  requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
     const { sender, recipient, depositAmount, ratePerSecond, startTime, endTime } = req.body ?? {};
     const requestId = (req as Request & { id?: string }).id;
@@ -401,6 +403,7 @@ streamsRouter.post(
  */
 streamsRouter.delete(
   '/:id',
+  requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
     const requestId = (req as Request & { id?: string }).id;

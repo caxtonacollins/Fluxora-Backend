@@ -173,7 +173,7 @@ src/
   webhooks/        # canonical webhook signing and verification contract
   index.ts         # Express app and server
 k6/
-  main.js          # k6 entrypoint — composes scenarios
+  main.js          # k6 entrypoint â€” composes scenarios
   config.js        # thresholds, stage profiles, base URL
   helpers.js       # shared metrics and payload helpers
   scenarios/       # per-endpoint load scenarios
