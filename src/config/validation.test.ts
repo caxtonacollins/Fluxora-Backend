@@ -10,9 +10,12 @@ import {
 } from './validation';
 
 describe('Validation Module', () => {
+    const validSender = 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXNMWX5YSXF3YFQH4M';
+    const validRecipient = 'GCFXTH6R3Q4U4H6QVLN5MUFYQGMGZTQC7Y2E7BTSAMJQ3BZZ4J5ER4Q3';
+
     describe('validateStellarAddress', () => {
         it('should accept valid Stellar address', () => {
-            const address = 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXNMWX5YSXF3YFQHF';
+            const address = validSender;
             expect(validateStellarAddress(address)).toBe(address);
         });
 
@@ -123,8 +126,8 @@ describe('Validation Module', () => {
 
     describe('validateCreateStreamRequest', () => {
         const validRequest = {
-            sender: 'GBRPYHIL2CI3WHZDTOOQFC6EB4KJJGUJJBBX7UYXNMWX5YSXF3YFQHF',
-            recipient: 'GBBD47UZQ5CYVVEUVRYNQZX3UYXF3YFQHFGBRPYHIL2CI3WHZDTOOQFC6',
+            sender: validSender,
+            recipient: validRecipient,
             depositAmount: '1000000',
             ratePerSecond: '100',
             startTime: Math.floor(Date.now() / 1000) + 3600,

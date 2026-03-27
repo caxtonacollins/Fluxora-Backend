@@ -8,15 +8,17 @@ import {
     Config,
 } from './env';
 
+const ORIGINAL_ENV = { ...process.env };
+
 describe('Environment Configuration', () => {
     beforeEach(() => {
         resetConfig();
-        // Save original env
-        process.env.NODE_ENV = 'development';
+        process.env = { ...ORIGINAL_ENV, NODE_ENV: 'development' };
     });
 
     afterEach(() => {
         resetConfig();
+        process.env = { ...ORIGINAL_ENV };
     });
 
     describe('loadConfig', () => {

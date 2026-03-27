@@ -6,8 +6,10 @@
     "outDir": "dist",
     "rootDir": "src",
     "strict": true,
+    "isolatedModules": true,
     "esModuleInterop": true,
-    "skipLibCheck": true,
+    "skipLibCheck": true
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*.ts", "src/types/**/*.d.ts"],
+  "exclude": ["src/**/*.test.ts", "tests/**/*", "dist", "node_modules"]
 }

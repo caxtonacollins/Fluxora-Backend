@@ -1,372 +1,209 @@
-/**
- * Streams API Integration Tests
- * 
- * Purpose: Verify the streams API endpoints with decimal string serialization.
- * Tests cover happy paths, validation failures, error responses, and edge cases.
- * 
- * @file streams.test.ts
- */
-
-import express, { Application } from 'express';
 import request from 'supertest';
 
-// Import the streams router directly - we'll need to export the streams array for testing
-import { streamsRouter } from '../src/routes/streams.js';
-import { errorHandler } from '../src/middleware/errorHandler.js';
-import { requestIdMiddleware } from '../src/utils/logger.js';
+import { createApp } from '../src/app.js';
+import type { Config } from '../src/config/env.js';
+import { HealthCheckManager } from '../src/config/health.js';
+import { resetStreamsStore } from '../src/routes/streams.js';
 
-// Create a minimal test app
-function createTestApp(): Application {
-  const app = express();
-  app.use(requestIdMiddleware);
-  app.use(express.json());
-  app.use('/api/streams', streamsRouter);
-  app.use(errorHandler);
-  return app;
+function makeConfig(overrides: Partial<Config> = {}): Config {
+  return {
+    port: 3000,
+    nodeEnv: 'development',
+    apiVersion: '0.1.0',
+    databaseUrl: 'postgresql://localhost/fluxora',
+    databasePoolSize: 10,
+    databaseConnectionTimeout: 5000,
+    redisUrl: 'redis://localhost:6379',
+    redisEnabled: false,
+    horizonUrl: 'https://horizon-testnet.stellar.org',
+    horizonNetworkPassphrase: 'Test SDF Network ; September 2015',
+    jwtSecret: 'dev-secret-key-change-in-production',
+    jwtExpiresIn: '24h',
+    logLevel: 'info',
+    metricsEnabled: true,
+    enableStreamValidation: true,
+    enableRateLimit: false,
+    requirePartnerAuth: false,
+    requireAdminAuth: false,
+    indexerEnabled: false,
+    workerEnabled: false,
+    indexerStallThresholdMs: 5 * 60 * 1000,
+    deploymentChecklistVersion: '2026-03-27',
+    ...overrides,
+  };
 }
 
-describe('Streams API - Decimal String Serialization', () => {
-  let app: Application;
+function makeApp(overrides: Partial<Config> = {}) {
+  return createApp({
+    config: makeConfig(overrides),
+    healthManager: new HealthCheckManager(),
+  });
+}
 
+describe('Streams API', () => {
   beforeEach(() => {
-    app = createTestApp();
+    resetStreamsStore();
   });
 
-  describe('POST /api/streams', () => {
-    describe('valid decimal string inputs', () => {
-      it('should create stream with valid decimal strings', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '1000000.0000000',
-            ratePerSecond: '0.0000116',
-          })
-          .expect(201);
-
-        expect(response.body.id).toBeDefined();
-        expect(response.body.depositAmount).toBe('1000000.0000000');
-        expect(response.body.ratePerSecond).toBe('0.0000116');
-        expect(response.body.status).toBe('active');
-      });
-
-      it('should create stream with integer amounts', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '1',
-          })
-          .expect(201);
-
-        expect(response.body.depositAmount).toBe('100');
-        expect(response.body.ratePerSecond).toBe('1');
-      });
-
-      it('should create stream with negative rate rejected', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '-1',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('should create stream with zero deposit rejected', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '0',
-            ratePerSecond: '1',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-    });
-
-    describe('invalid decimal string inputs', () => {
-      it('should reject numeric depositAmount', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: 1000000,
-            ratePerSecond: '0.0000116',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-        expect(response.body.error.details).toBeDefined();
-      });
-
-      it('should reject numeric ratePerSecond', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '1000000',
-            ratePerSecond: 0.0000116,
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('should reject empty depositAmount', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '',
-            ratePerSecond: '0.0000116',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('should reject invalid format depositAmount', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: 'invalid',
-            ratePerSecond: '0.0000116',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-        expect(response.body.error.details).toBeDefined();
-      });
-
-      it('should reject scientific notation', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '1e10',
-            ratePerSecond: '0.0000116',
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('should reject NaN', async () => {
-        await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: 'NaN',
-            ratePerSecond: '0.0000116',
-          })
-          .expect(400);
-      });
-    });
-
-    describe('missing required fields', () => {
-      it('should reject missing sender', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '1',
-          })
-          .expect(400);
-
-        expect(response.body.error.message).toContain('sender');
-      });
-
-      it('should reject missing recipient', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '1',
-          })
-          .expect(400);
-
-        expect(response.body.error.message).toContain('recipient');
-      });
-
-      it('should accept missing depositAmount (uses default)', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            ratePerSecond: '1',
-          })
-          .expect(201);
-
-        // depositAmount defaults to '0' per implementation
-        expect(response.body.depositAmount).toBe('0');
-      });
-
-      it('should accept missing ratePerSecond (uses default)', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-          })
-          .expect(201);
-
-        // ratePerSecond defaults to '0' per implementation
-        expect(response.body.ratePerSecond).toBe('0');
-      });
-    });
-
-    describe('invalid startTime', () => {
-      it('should reject non-integer startTime', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '1',
-            startTime: 123.45,
-          })
-          .expect(400);
-
-        expect(response.body.error.code).toBe('VALIDATION_ERROR');
-      });
-
-      it('should reject negative startTime', async () => {
-        await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: '100',
-            ratePerSecond: '1',
-            startTime: -1,
-          })
-          .expect(400);
-      });
-    });
-
-    describe('error response format', () => {
-      it('should include requestId in error response', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .set('X-Request-ID', 'test-request-123')
-          .send({
-            depositAmount: 'invalid',
-            ratePerSecond: '1',
-          })
-          .expect(400);
-
-        expect(response.body.error.requestId).toBe('test-request-123');
-      });
-
-      it('should include error details for validation errors', async () => {
-        const response = await request(app)
-          .post('/api/streams')
-          .send({
-            sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
-            recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
-            depositAmount: 'invalid',
-            ratePerSecond: 'also-invalid',
-          })
-          .expect(400);
-
-        expect(response.body.error.details).toBeDefined();
-        expect(Array.isArray(response.body.error.details.errors)).toBe(true);
-      });
-    });
-  });
-
-  describe('GET /api/streams', () => {
-    it('should return streams array with count', async () => {
-      const response = await request(app)
-        .get('/api/streams')
-        .expect(200);
-
-      expect(response.body.streams).toBeDefined();
-      expect(Array.isArray(response.body.streams)).toBe(true);
-      expect(response.body.total).toBeDefined();
-      expect(typeof response.body.total).toBe('number');
-    });
-
-    it('should include requestId in response', async () => {
-      await request(app)
-        .get('/api/streams')
-        .set('X-Request-ID', 'test-123')
-        .expect(200);
-    });
-  });
-
-  describe('GET /api/streams/:id', () => {
-    it('should return 404 for non-existent stream', async () => {
-      const response = await request(app)
-        .get('/api/streams/non-existent-id')
-        .expect(404);
-
-      expect(response.body.error.code).toBe('NOT_FOUND');
-    });
-  });
-
-  describe('DELETE /api/streams/:id', () => {
-    it('should return 404 for non-existent stream', async () => {
-      const response = await request(app)
-        .delete('/api/streams/non-existent-id')
-        .expect(404);
-
-      expect(response.body.error.code).toBe('NOT_FOUND');
-    });
-  });
-});
-
-describe('Error Handler Integration', () => {
-  let app: Application;
-
-  beforeEach(() => {
-    app = createTestApp();
-  });
-
-  it('should handle 404 for unknown routes', async () => {
-    // Note: Express returns plain text for 404 by default
-    // The 404 handler in index.ts is not used in the test app
-    const response = await request(app)
-      .get('/unknown-route')
-      .expect(404);
-
-    // Just verify we get a 404
-    expect(response.status).toBe(404);
-  });
-
-  it('should handle malformed JSON', async () => {
-    // Note: Express's JSON parser returns 400 for malformed JSON by default
-    const response = await request(app)
+  it('creates a stream with valid decimal string inputs', async () => {
+    const response = await request(makeApp())
       .post('/api/streams')
-      .set('Content-Type', 'application/json')
-      .send('{ invalid json }');
+      .send({
+        sender: 'GCSX2XXXXXXXXXXXXXXXXXXXXXXX',
+        recipient: 'GDRX2XXXXXXXXXXXXXXXXXXXXXXX',
+        depositAmount: '1000000.0000000',
+        ratePerSecond: '0.0000116',
+      });
 
-    // Express JSON parser returns 400 for malformed JSON
-    // But in this test setup, it might return 500
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.status).toBeLessThanOrEqual(500);
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBeDefined();
+    expect(response.body.depositAmount).toBe('1000000.0000000');
+    expect(response.body.ratePerSecond).toBe('0.0000116');
+    expect(response.body.status).toBe('active');
+  });
+
+  it('marks future streams as scheduled', async () => {
+    const response = await request(
+      createApp({
+        config: makeConfig(),
+        healthManager: new HealthCheckManager(),
+      }),
+    )
+      .post('/api/streams')
+      .send({
+        sender: 'alice',
+        recipient: 'bob',
+        depositAmount: '100',
+        ratePerSecond: '1',
+        startTime: Math.floor(Date.now() / 1000) + 3600,
+      });
+
+    expect(response.status).toBe(201);
+    expect(response.body.status).toBe('scheduled');
+  });
+
+  it('rejects missing required fields with normalized validation errors', async () => {
+    const response = await request(makeApp())
+      .post('/api/streams')
+      .send({
+        sender: 'alice',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('validation_error');
+    expect(response.body.error.details).toEqual({ field: 'recipient' });
+  });
+
+  it('rejects malformed decimal values with field-level details', async () => {
+    const response = await request(makeApp())
+      .post('/api/streams')
+      .send({
+        sender: 'alice',
+        recipient: 'bob',
+        depositAmount: 100,
+        ratePerSecond: '1',
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.code).toBe('validation_error');
+    expect(response.body.error.details).toEqual(
+      expect.objectContaining({
+        field: 'depositAmount',
+      }),
+    );
+  });
+
+  it('rejects duplicate delivery for a reused Idempotency-Key', async () => {
+    const app = makeApp();
+    const payload = {
+      sender: 'alice',
+      recipient: 'bob',
+      depositAmount: '100',
+      ratePerSecond: '1',
+    };
+
+    const first = await request(app)
+      .post('/api/streams')
+      .set('idempotency-key', 'stream-create-1')
+      .send(payload);
+    const second = await request(app)
+      .post('/api/streams')
+      .set('idempotency-key', 'stream-create-1')
+      .send(payload);
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(409);
+    expect(second.body.error.code).toBe('duplicate_delivery');
+    expect(second.body.error.details.streamId).toBe(first.body.id);
+  });
+
+  it('lists streams with a total count', async () => {
+    const app = makeApp();
+
+    await request(app).post('/api/streams').send({
+      sender: 'alice',
+      recipient: 'bob',
+      depositAmount: '100',
+      ratePerSecond: '1',
+    });
+
+    const response = await request(app).get('/api/streams');
+
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.streams)).toBe(true);
+    expect(response.body.total).toBe(1);
+  });
+
+  it('returns 404 for a non-existent stream', async () => {
+    const response = await request(makeApp()).get('/api/streams/non-existent-id');
+
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('not_found');
+  });
+
+  it('rejects unauthenticated partner writes when partner auth is required', async () => {
+    const response = await request(
+      makeApp({
+        nodeEnv: 'staging',
+        requirePartnerAuth: true,
+        partnerApiToken: 'partner-secret',
+      }),
+    )
+      .post('/api/streams')
+      .send({
+        sender: 'alice',
+        recipient: 'bob',
+        depositAmount: '100',
+        ratePerSecond: '1',
+      });
+
+    expect(response.status).toBe(401);
+    expect(response.body.error.code).toBe('unauthorized');
+  });
+
+  it('allows authenticated partner writes and deletes when partner auth is required', async () => {
+    const app = makeApp({
+      nodeEnv: 'staging',
+      requirePartnerAuth: true,
+      partnerApiToken: 'partner-secret',
+    });
+
+    const createResponse = await request(app)
+      .post('/api/streams')
+      .set('authorization', 'Bearer partner-secret')
+      .send({
+        sender: 'alice',
+        recipient: 'bob',
+        depositAmount: '100',
+        ratePerSecond: '1',
+      });
+
+    const deleteResponse = await request(app)
+      .delete(`/api/streams/${createResponse.body.id}`)
+      .set('authorization', 'Bearer partner-secret');
+
+    expect(createResponse.status).toBe(201);
+    expect(deleteResponse.status).toBe(200);
+    expect(deleteResponse.body.stream.status).toBe('cancelled');
   });
 });

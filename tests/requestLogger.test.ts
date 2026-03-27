@@ -1,3 +1,4 @@
+import { jest } from '@jest/globals';
 import request from 'supertest';
 import { app } from '../src/app';
 import { logger } from '../src/lib/logger';
@@ -43,7 +44,7 @@ describe('requestLogger middleware', () => {
     expect(receivedCall).toBeDefined();
     const meta = receivedCall![2] as Record<string, unknown>;
     expect(meta.method).toBe('GET');
-    expect(meta.path).toBe('/');
+    expect(meta.path).toBe('/health');
   });
 
   it('"request completed" log includes statusCode and durationMs', async () => {

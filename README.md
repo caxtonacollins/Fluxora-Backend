@@ -1,104 +1,90 @@
 # Fluxora Backend
 
-Express + TypeScript API for the Fluxora treasury streaming protocol. Today this repository exposes a minimal HTTP surface for stream CRUD and health checks. For Issue 54, the service now defines a concrete indexer-stall health classification plus an inline incident runbook so operators can reason about stale chain-derived state without relying on tribal knowledge.
+Express + TypeScript API for the Fluxora treasury streaming protocol. The backend is the off-chain companion to the streaming contract and should present operator-grade HTTP behavior: predictable status codes, explicit failure semantics, durable chain-derived views where required, and enough health detail for staging to be evaluated against production expectations.
 
-## Decimal String Serialization Policy
+## Staging deployment checklist parity with prod
 
-All amounts crossing the chain/API boundary are serialized as **decimal strings** to prevent precision loss in JSON.
+This repository now exposes a concrete staging/prod parity surface:
 
-### Amount Fields
+- `GET /health` provides a public summary suitable for basic probes.
+- `GET /health/ready` is the machine-readable readiness gate for automation.
+- `GET /health/live` is an administrator-only detailed health report.
+- `GET /health/deployment` is an administrator-only staging/prod checklist parity report.
 
-- `depositAmount` - Total deposit as decimal string (e.g., "1000000.0000000")
-- `ratePerSecond` - Streaming rate as decimal string (e.g., "0.0000116")
+The deployment report records service-level outcomes, trust boundaries, failure modes, observability signals, and explicit non-goals in one place so operators do not need tribal knowledge to understand how the service should behave.
 
-### Validation Rules
+## Service-level outcomes
 
-- Amounts MUST be strings in decimal notation (e.g., "100", "-50", "0.0000001")
-- Native JSON numbers are rejected to prevent floating-point precision issues
-- Values exceeding safe integer ranges are rejected with `DECIMAL_OUT_OF_RANGE` error
+- HTTP failures use a normalized JSON envelope with `error.code`, `error.status`, and `error.requestId`.
+- Amounts crossing the chain/API boundary remain decimal strings such as `depositAmount` and `ratePerSecond`.
+- Staging and production readiness fail closed when dependency health or chain-derived freshness does not meet the declared guarantees.
+- Duplicate partner delivery is classified explicitly through `Idempotency-Key` reuse with `409 duplicate_delivery`.
 
-### Error Codes
+## Trust boundaries
 
-| Code                     | Description                               |
-| ------------------------ | ----------------------------------------- |
-| `DECIMAL_INVALID_TYPE`   | Amount was not a string                   |
-| `DECIMAL_INVALID_FORMAT` | String did not match decimal pattern      |
-| `DECIMAL_OUT_OF_RANGE`   | Value exceeds maximum supported precision |
-| `DECIMAL_EMPTY_VALUE`    | Amount was empty or null                  |
+| Actor | May do | May not do |
+| --- | --- | --- |
+| Public internet clients | Read `/`, `/health`, `/health/ready`, `/api/streams`, and `/api/streams/:id` | Access admin diagnostics or protected mutating routes |
+| Authenticated partners | Create and cancel streams when bearer auth is configured | Bypass validation or idempotency checks |
+| Administrators | Read `/health/live` and `/health/deployment` for incident diagnosis | Override client-visible readiness behavior |
+| Internal workers | Advance chain-derived checkpoints and affect readiness via health | Expose unauthenticated HTTP behavior directly |
 
-### Trust Boundaries
+## Failure modes
 
-| Actor                  | Capabilities                               |
-| ---------------------- | ------------------------------------------ |
-| Public Clients         | Read streams, submit valid decimal strings |
-| Authenticated Partners | Create streams with validated amounts      |
-| Administrators         | Full access, diagnostic logging            |
-| Internal Workers       | Database operations, chain interactions    |
+| Scenario | Client-visible behavior | Operator expectation |
+| --- | --- | --- |
+| Invalid input | `400 validation_error` with field details when available | Use request/correlation IDs to trace the rejection |
+| Dependency outage | `/health/ready` returns `503 not_ready` | Inspect dependency status in `/health/live` |
+| Partial chain-derived data | `/health/ready` returns `503` when indexer freshness is required and unhealthy | Confirm last successful sync time and stall threshold |
+| Duplicate delivery | `409 duplicate_delivery` when an `Idempotency-Key` is reused | Correlate retry attempts before replaying |
 
-### Failure Modes
+## Decimal string serialization policy
 
-| Scenario                 | Behavior                          |
-| ------------------------ | --------------------------------- |
-| Invalid decimal type     | 400 with `DECIMAL_INVALID_TYPE`   |
-| Malformed decimal string | 400 with `DECIMAL_INVALID_FORMAT` |
-| Precision overflow       | 400 with `DECIMAL_OUT_OF_RANGE`   |
-| Missing required field   | 400 with `VALIDATION_ERROR`       |
-| Stream not found         | 404 with `NOT_FOUND`              |
+All amounts crossing the chain/API boundary are serialized as decimal strings to prevent precision loss in JSON.
 
-### Operational Notes
+- `depositAmount` and `ratePerSecond` must be strings such as `"1000000.0000000"` or `"0.0000116"`.
+- Native JSON numbers are rejected for those fields.
+- Malformed or missing amount fields are classified as `validation_error` with field-specific details.
 
-#### Diagnostic Logging
+## API overview
 
-Serialization events are logged with context for debugging:
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/` | API metadata and route overview |
+| GET | `/health` | Public health summary |
+| GET | `/health/ready` | Public readiness gate |
+| GET | `/health/live` | Admin-only detailed health |
+| GET | `/health/deployment` | Admin-only staging/prod parity report |
+| GET | `/api/streams` | List streams |
+| GET | `/api/streams/:id` | Get a stream by ID |
+| POST | `/api/streams` | Create a stream; may require partner bearer auth |
+| DELETE | `/api/streams/:id` | Cancel a stream; may require partner bearer auth |
 
-```
-Decimal validation failed {"field":"depositAmount","errorCode":"DECIMAL_INVALID_TYPE","requestId":"..."}
-```
+## Verification evidence
 
-#### Health Observability
-
-- `GET /health` - Returns service health status
-- Request IDs enable correlation across logs
-- Structured JSON logs for log aggregation systems
-
-#### Verification Commands
+Commands used for this change:
 
 ```bash
-# Run all tests
-npm test
-
-# Run with coverage
-npm test -- --coverage
-
-# Build TypeScript
-npm run build
-
-# Start server
-npm start
+pnpm test
+pnpm build
 ```
 
-### Known Limitations
+Automated coverage for this area now includes:
 
-- In-memory stream storage (production requires database integration)
-- No Stellar RPC integration (placeholder for chain interactions)
-- Rate limiting not implemented (future enhancement)
+- normalized 404, invalid JSON, oversized payload, validation, and 500 envelopes
+- readiness behavior during dependency outage
+- staging deployment parity failure and success cases
+- partner/admin auth boundary checks
+- duplicate-delivery handling with `Idempotency-Key`
 
-## What's in this repo
+## Non-goals and follow-up work
 
-- Implemented today:
-  - API info endpoint
-  - health endpoint
-  - in-memory stream CRUD placeholder
-  - indexer freshness classification for `healthy`, `starting`, `stalled`, and `not_configured`
-  - health-route reporting for indexer freshness
-- Explicitly not implemented yet:
-  - a real indexer worker
-  - durable checkpoint persistence
-  - database-backed chain state
-  - automated restart orchestration
-  - rate limiting or duplicate-delivery protection
+Intentionally deferred in this issue:
 
-If the health route reports `indexer.status = "stalled"`, treat that as an operational signal that chain-derived views would be stale if the real indexer were enabled in this service.
+- persistent stream storage
+- automatic remediation for unhealthy dependencies
+- richer partner/admin identity systems beyond bearer-token gates
+- OpenAPI generation for the new health/deployment response schemas
 
 ## Tech stack
 
@@ -126,69 +112,8 @@ API runs at [http://localhost:3000](http://localhost:3000).
 
 - `npm run dev` - run with tsx watch
 - `npm run build` - compile to `dist/`
-- `npm test` - run the HTTP error-handling tests
+- `npm test` - run the automated test suite
 - `npm start` - run compiled `dist/index.js`
-
-## API overview
-
-| Method | Path               | Description                                                                      |
-| ------ | ------------------ | -------------------------------------------------------------------------------- |
-| GET    | `/`                | API info                                                                         |
-| GET    | `/health`          | Health check                                                                     |
-| GET    | `/api/streams`     | List streams                                                                     |
-| GET    | `/api/streams/:id` | Get one stream                                                                   |
-| POST   | `/api/streams`     | Create stream (body: sender, recipient, depositAmount, ratePerSecond, startTime) |
-
-Contract guarantees for this area:
-
-## Operational Guidelines
-
-### Trust Boundaries
-- **Public API**: The `/api/streams/lookup` endpoint is accessible to any client with stream IDs. Currently, no authentication is enforced.
-- **Failures**: Invalid JSON or missing `ids` array returns `400 Bad Request`. Non-existent IDs are silently omitted from the response to prevent information leakage and ensure robustness for partial matches.
-
-### Health and Observability
-- **Success Metrics**: Monitor `200 OK` responses for the lookup endpoint.
-- **Error Monitoring**: Track `400` errors for client integration issues.
-- **Diagnostics**: If streams are not found, verify the stream creation logs or ensure the in-memory state hasn't been reset by a restart.
-
-## Project structure
-...
-
-This is sufficient for local diagnosis now. If Redis, PostgreSQL, Horizon RPC, or workers are added later, their outage classifications should be folded into the same logging pattern.
-
-### Verification evidence
-
-Automated tests in `src/app.test.ts` cover:
-
-- normalized `404` for unknown routes
-- normalized `400` for invalid JSON
-- normalized `413` for oversized payloads
-- normalized `400` for route validation failures
-- normalized `500` for unexpected exceptions
-
-Build verification:
-
-```bash
-npm test
-npm run build
-```
-
-### Non-goals and follow-up work
-
-Intentionally deferred in this issue:
-
-- rate limiting implementation
-- duplicate-submission detection
-- persistence-backed failure classification
-- OpenAPI generation for error schemas
-
-Recommended follow-up issues:
-
-- add rate limiting that returns normalized `429` errors
-- add idempotency / duplicate-submission protection
-- publish OpenAPI schemas for the normalized error envelope
-- extend dependency-outage classification once real database / indexing integrations land
 
 ## Project structure
 
