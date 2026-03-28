@@ -1,123 +1,52 @@
-import express, {
-  type NextFunction,
-  type Request,
-  type RequestHandler,
-  type Response,
-} from 'express';
-
-import { initializeConfig, type Config } from './config/env.js';
-import {
-  createDatabaseHealthChecker,
-  createHorizonHealthChecker,
-  createRedisHealthChecker,
-  HealthCheckManager,
-} from './config/health.js';
-import {
-  errorHandler,
-  notFoundHandler,
-  requestIdMiddleware,
-} from './errors.js';
+import express from 'express';
+import type { Request, Response, NextFunction } from 'express';
+import { streamsRouter } from './routes/streams.js';
+import { healthRouter } from './routes/health.js';
+import { indexerRouter } from './routes/indexer.js';
 import { correlationIdMiddleware } from './middleware/correlationId.js';
+import { corsAllowlistMiddleware } from './middleware/cors.js';
 import { requestLoggerMiddleware } from './middleware/requestLogger.js';
-import { createBearerTokenAuth } from './middleware/tokenAuth.js';
-import { createHealthRouter } from './routes/health.js';
-import { createStreamsRouter } from './routes/streams.js';
+import { isShuttingDown } from './shutdown.js';
 
-export interface CreateAppOptions {
-  config?: Config;
-  healthManager?: HealthCheckManager;
+export interface AppOptions {
+  /** When true, mounts a /__test/error route that throws unconditionally. */
   includeTestRoutes?: boolean;
 }
 
-function buildHealthManager(config: Config): HealthCheckManager {
-  const healthManager = new HealthCheckManager();
-  healthManager.registerChecker(createDatabaseHealthChecker());
+app.use(express.json({ limit: '256kb' }));
+// Correlation ID must be first so all subsequent middleware and routes have req.correlationId.
+app.use(correlationIdMiddleware);
+app.use(corsAllowlistMiddleware);
+app.use(requestLoggerMiddleware);
 
-  if (config.redisEnabled) {
-    healthManager.registerChecker(createRedisHealthChecker());
+// During shutdown, tell clients to close the connection after this response
+// so keep-alive connections are not reused and the server can drain quickly.
+app.use((_req: Request, res: Response, next: NextFunction) => {
+  if (isShuttingDown()) {
+    res.setHeader('Connection', 'close');
   }
-
-  if (config.nodeEnv !== 'development') {
-    healthManager.registerChecker(createHorizonHealthChecker(config.horizonUrl));
-  }
-
-  return healthManager;
-}
-
-const allowAnonymous: RequestHandler = (
-  _req: Request,
-  _res: Response,
-  next: NextFunction,
-) => {
   next();
-};
+});
 
-export function createApp(options: CreateAppOptions = {}) {
-  const config = options.config ?? initializeConfig();
-  const healthManager = options.healthManager ?? buildHealthManager(config);
+app.use('/health', healthRouter);
+app.use('/api/streams', streamsRouter);
+app.use('/internal/indexer', indexerRouter);
 
-  const adminAuth = createBearerTokenAuth({
-    role: 'administrator',
-    token: config.adminApiToken,
-    required: config.requireAdminAuth,
+app.get('/', (_req: any, res: any) => {
+  res.json({
+    name: 'Fluxora API',
+    version: '0.1.0',
+    docs: 'Programmable treasury streaming on Stellar.',
   });
+});
 
-  const partnerAuth =
-    config.requirePartnerAuth || config.partnerApiToken
-      ? createBearerTokenAuth({
-          role: 'partner',
-          token: config.partnerApiToken,
-          required: config.requirePartnerAuth,
-        })
-      : allowAnonymous;
-
-  const app = express();
-
-  app.use(correlationIdMiddleware);
-  app.use(requestIdMiddleware);
-  app.use(requestLoggerMiddleware);
-  app.use(express.json({ limit: '256kb' }));
-
-  app.get('/', (_req, res) => {
-    res.json({
-      name: 'Fluxora API',
-      version: config.apiVersion,
-      service: 'fluxora-backend',
-      environment: config.nodeEnv,
-      docs: {
-        health: '/health',
-        readiness: '/health/ready',
-        deployment: '/health/deployment',
-        streams: '/api/streams',
-      },
-      guarantees: [
-        'Normalized JSON error envelopes with request IDs',
-        'Explicit readiness behavior for dependency and indexer failures',
-        'Admin and partner trust boundaries enforced where configured',
-      ],
-    });
+app.use((_req: any, res: any) => {
+  res.status(404).json({
+    error: {
+      code: 'NOT_FOUND',
+      message: 'The requested resource was not found',
+    },
   });
+});
 
-  app.use(
-    '/health',
-    createHealthRouter({
-      adminAuth,
-      config,
-      healthManager,
-    }),
-  );
-  app.use('/api/streams', createStreamsRouter({ partnerAuth }));
-
-  if (options.includeTestRoutes) {
-    app.get('/__test/error', () => {
-      throw new Error('boom');
-    });
-  }
-
-  app.use(notFoundHandler);
-  app.use(errorHandler);
-
-  return app;
-}
-
-export const app = createApp();
+app.use(errorHandler);

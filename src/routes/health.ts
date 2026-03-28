@@ -1,208 +1,112 @@
-import {
-  Router,
-  type NextFunction,
-  type Request,
-  type RequestHandler,
-  type Response,
-} from 'express';
-
-import { buildDeploymentChecklistReport } from '../config/deployment.js';
-import type { Config } from '../config/env.js';
-import type { HealthCheckManager, HealthReport } from '../config/health.js';
-import { asyncHandler } from '../errors.js';
+import express from 'express';
+import type { Request, Response } from 'express';
 import { assessIndexerHealth } from '../indexer/stall.js';
 
-export interface CreateHealthRouterOptions {
-  adminAuth: RequestHandler;
-  config: Config;
-  healthManager: HealthCheckManager;
-}
+import { HealthCheckManager } from '../config/health.js';
+import { Logger } from '../config/logger.js';
+import { Config } from '../config/env.js';
+import { successResponse, errorResponse } from '../utils/response.js';
 
-function buildIndexerHealth(config: Config) {
-  return assessIndexerHealth({
-    enabled: config.indexerEnabled,
-    lastSuccessfulSyncAt: config.indexerLastSuccessfulSyncAt,
-    stallThresholdMs: config.indexerStallThresholdMs,
+import {
+  DEFAULT_INDEXER_STALL_THRESHOLD_MS,
+  assessIndexerHealth,
+} from '../indexer/stall.js';
+
+export const healthRouter = Router();
+
+    enabled: false,
+    stallThresholdMs: DEFAULT_INDEXER_STALL_THRESHOLD_MS,
   });
-}
 
-function isReady(
-  config: Config,
-  dependencyHealth: HealthReport,
-  deploymentStatus: ReturnType<typeof buildDeploymentChecklistReport>,
-): boolean {
-  if (dependencyHealth.status !== 'healthy') {
-    return false;
-  }
+  res.json({
+    status: indexer.status === 'stalled' || indexer.status === 'starting'
+/**
+ * GET /health - Liveness + basic system status
+ */
+healthRouter.get('/', (req: Request, res: Response) => {
+  const config = req.app.locals.config as Config | undefined;
 
-  if (config.indexerEnabled && deploymentStatus.status !== 'pass') {
-    return false;
-  }
-
-  return deploymentStatus.status !== 'fail';
-}
-
-function buildSnapshot(
-  config: Config,
-  dependencyHealth: HealthReport,
-) {
-  const indexer = buildIndexerHealth(config);
-  const deployment = buildDeploymentChecklistReport({
-    config,
-    dependencyHealth,
-    indexerHealth: indexer,
-  });
-  const ready = isReady(config, dependencyHealth, deployment);
-
-  return {
-    timestamp: new Date().toISOString(),
-    service: 'fluxora-backend',
-    environment: config.nodeEnv,
-    status: ready ? 'ok' : 'degraded',
-    ready,
-    dependencyHealth,
-    indexer,
-    deployment,
-  };
-}
-
-export function createHealthRouter(options: CreateHealthRouterOptions) {
-  const router = Router();
-
-  router.get('/', (_req: Request, res: Response) => {
-    const snapshot = buildSnapshot(
-      options.config,
-      options.healthManager.getLastReport(options.config.apiVersion),
-    );
-
-    res.json({
-      status: snapshot.status,
-      service: snapshot.service,
-      environment: snapshot.environment,
-      timestamp: snapshot.timestamp,
-      readiness: snapshot.ready ? 'ready' : 'not_ready',
-      dependencies: {
-        status: snapshot.dependencyHealth.status,
-      },
-      indexer: {
-        status: snapshot.indexer.status,
-        summary: snapshot.indexer.summary,
-      },
-      deployment: {
-        status: snapshot.deployment.status,
-        parityRequired: snapshot.deployment.parityRequired,
-      },
+  // Assess indexer health (safe fallback if not present)
+  let indexer;
+  try {
+    indexer = assessIndexerHealth({
+      thresholdMs: DEFAULT_INDEXER_STALL_THRESHOLD_MS,
     });
-  });
+  } catch {
+    indexer = { status: 'unknown' };
+  }
 
-  router.get(
-    '/ready',
-    asyncHandler(async (_req, res) => {
-      const dependencyHealth = await options.healthManager.checkAll();
-      const snapshot = buildSnapshot(options.config, dependencyHealth);
-      const statusCode = snapshot.ready ? 200 : 503;
+  const status =
+    indexer.status === 'stalled' || indexer.status === 'starting'
+      ? 'degraded'
+      : 'ok';
 
-      res.status(statusCode).json({
-        status: snapshot.ready ? 'ready' : 'not_ready',
-        service: snapshot.service,
-        environment: snapshot.environment,
-        timestamp: snapshot.timestamp,
-        dependencyHealth: snapshot.dependencyHealth,
-        indexer: snapshot.indexer,
-        deployment: {
-          status: snapshot.deployment.status,
-          summary: snapshot.deployment.summary,
-        },
+  res.json(
+    successResponse({
+      status,
+      service: 'fluxora-backend',
+      network: config?.stellarNetwork ?? 'unknown',
+      contractAddresses: config?.contractAddresses ?? {},
+      timestamp: new Date().toISOString(),
+      indexer,
+    })
+  );
+});
+
+/**
+ * GET /health/ready - Readiness probe
+ */
+healthRouter.get('/ready', async (req: Request, res: Response) => {
+  const healthManager = req.app.locals.healthManager as HealthCheckManager;
+  const logger = req.app.locals.logger as Logger;
+
+  try {
+    const report = await healthManager.checkAll();
+
+    if (report.status === 'unhealthy') {
+      logger.warn('Readiness check failed', {
+        dependencies: report.dependencies.map((d: any) => ({
+          name: d.name,
+          status: d.status,
+          error: d.error,
+        })),
       });
-    }),
-  );
 
-  router.get(
-    '/live',
-    options.adminAuth,
-    asyncHandler(async (_req, res) => {
-      const dependencyHealth = await options.healthManager.checkAll();
-      const snapshot = buildSnapshot(options.config, dependencyHealth);
-      const statusCode = snapshot.ready ? 200 : 503;
+      return res.status(503).json(
+        errorResponse(
+          'Service not ready',
+          'SERVICE_UNAVAILABLE',
+          report
+        )
+      );
+    }
 
-      res.status(statusCode).json(snapshot);
-    }),
-  );
+    res.json(successResponse({ report }));
+  } catch (err) {
+    logger.error('Readiness check error', err as Error);
 
-  router.get(
-    '/deployment',
-    options.adminAuth,
-    asyncHandler(async (_req, res) => {
-      const dependencyHealth = await options.healthManager.checkAll();
-      const snapshot = buildSnapshot(options.config, dependencyHealth);
-      const statusCode = snapshot.deployment.status === 'fail' ? 503 : 200;
+    res.status(503).json(
+      errorResponse('Health check failed', 'HEALTH_CHECK_ERROR')
+    );
+  }
+});
 
-      res.status(statusCode).json({
-        timestamp: snapshot.timestamp,
-        service: snapshot.service,
-        environment: snapshot.environment,
-        dependencyHealth: {
-          status: snapshot.dependencyHealth.status,
-        },
-        indexer: {
-          status: snapshot.indexer.status,
-          summary: snapshot.indexer.summary,
-        },
-        report: snapshot.deployment,
-      });
-    }),
-  );
+/**
+ * GET /health/live - Detailed health report
+ */
+healthRouter.get('/live', async (req: Request, res: Response) => {
+  const healthManager = req.app.locals.healthManager as HealthCheckManager;
+  const config = req.app.locals.config as Config;
+  const logger = req.app.locals.logger as Logger;
 
-  return router;
-}
+  try {
+    const report = healthManager.getLastReport(config.apiVersion);
+    res.json(successResponse({ report }));
+  } catch (err) {
+    logger.error('Failed to get health report', err as Error);
 
-export const healthRouter = createHealthRouter({
-  adminAuth: (_req: Request, _res: Response, next: NextFunction) => next(),
-  config: {
-    apiVersion: '0.1.0',
-    port: 3000,
-    nodeEnv: 'development',
-    databaseUrl: 'postgresql://localhost/fluxora',
-    databasePoolSize: 10,
-    databaseConnectionTimeout: 5000,
-    redisUrl: 'redis://localhost:6379',
-    redisEnabled: false,
-    horizonUrl: 'https://horizon-testnet.stellar.org',
-    horizonNetworkPassphrase: 'Test SDF Network ; September 2015',
-    jwtSecret: 'dev-secret-key-change-in-production',
-    jwtExpiresIn: '24h',
-    logLevel: 'info',
-    metricsEnabled: true,
-    enableStreamValidation: true,
-    enableRateLimit: false,
-    requirePartnerAuth: false,
-    requireAdminAuth: false,
-    indexerEnabled: false,
-    workerEnabled: false,
-    indexerStallThresholdMs: 5 * 60 * 1000,
-    deploymentChecklistVersion: '2026-03-27',
-  },
-  healthManager: {
-    async checkAll() {
-      return {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: 0,
-        dependencies: [],
-        version: '0.1.0',
-      };
-    },
-    getLastReport() {
-      return {
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        uptime: 0,
-        dependencies: [],
-        version: '0.1.0',
-      };
-    },
-    registerChecker() {
-      return undefined;
-    },
-  } as unknown as HealthCheckManager,
+    res.status(500).json(
+      errorResponse('Failed to get health report', 'HEALTH_CHECK_ERROR')
+    );
+  }
 });

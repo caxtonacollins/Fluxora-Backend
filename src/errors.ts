@@ -1,19 +1,11 @@
 import { randomUUID } from 'node:crypto';
-
-import type {
-  ErrorRequestHandler,
-  NextFunction,
-  Request,
-  RequestHandler,
-  Response,
-} from 'express';
-
-import { CORRELATION_ID_HEADER } from './middleware/correlationId.js';
+import type { Request, Response, NextFunction } from 'express';
+import { ApiError as MiddlewareApiError } from './middleware/errorHandler.js';
 
 export class ApiError extends Error {
   status: number;
   code: string;
-  details?: Record<string, unknown>;
+  details: Record<string, unknown> | undefined;
   expose: boolean;
 
   constructor(
@@ -31,125 +23,44 @@ export class ApiError extends Error {
   }
 }
 
-export const requestIdMiddleware: RequestHandler = (
-  req: Request,
-  res: Response,
-  next: NextFunction,
-) => {
-  const requestId =
-    req.header('x-request-id') ||
-    req.header(CORRELATION_ID_HEADER) ||
-    req.correlationId ||
-    randomUUID();
-
-  req.requestId = requestId;
-  res.locals.requestId = requestId;
+export function requestIdMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const requestId = req.header('x-request-id') ?? randomUUID();
+  res.locals['requestId'] = requestId;
   res.setHeader('x-request-id', requestId);
   next();
-};
+}
 
-export const notFoundHandler: RequestHandler = (
-  req: Request,
-  _res: Response,
-  next: NextFunction,
-) => {
-  next(
-    new ApiError(404, 'not_found', `No route matches ${req.method} ${req.originalUrl}`),
-  );
-};
+export function notFoundHandler(req: Request, _res: Response, next: NextFunction): void {
+  next(new ApiError(404, 'not_found', `No route matches ${req.method} ${req.originalUrl}`));
+}
 
-function normalizeExpressError(error: unknown) {
-  const candidate = error as {
-    status?: number;
-    type?: string;
-    message?: string;
-  };
+function normalizeExpressError(error: unknown): ApiError {
+  const candidate = error as { status?: number; type?: string };
 
   if (candidate?.type === 'entity.parse.failed') {
     return new ApiError(400, 'invalid_json', 'Request body must be valid JSON');
   }
-
   if (candidate?.type === 'entity.too.large' || candidate?.status === 413) {
-    return new ApiError(
-      413,
-      'payload_too_large',
-      'Request body exceeds the 256 KiB limit',
-    );
+    return new ApiError(413, 'payload_too_large', 'Request body exceeds the 256 KiB limit');
   }
+  if (error instanceof ApiError) return error;
 
-  if (error instanceof ApiError) {
-    return error;
+  // Also handle ApiError from middleware/errorHandler (streams route)
+  if (error instanceof MiddlewareApiError) {
+    return new ApiError(error.statusCode, error.code, error.message, undefined, true);
   }
 
   return new ApiError(500, 'internal_error', 'Internal server error', undefined, false);
 }
 
-export function asyncHandler(
-  handler: (req: Request, res: Response, next: NextFunction) => Promise<unknown>,
-): RequestHandler {
-  return (req: Request, res: Response, next: NextFunction) => {
-    void handler(req, res, next).catch(next);
-  };
-}
-
-export function validationError(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(400, 'validation_error', message, details);
-}
-
-export function notFound(resource: string, id?: string): ApiError {
-  const message = id
-    ? `${resource} '${id}' was not found`
-    : `${resource} was not found`;
-
-  return new ApiError(404, 'not_found', message, { resource, ...(id ? { id } : {}) });
-}
-
-export function conflictError(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(409, 'conflict', message, details);
-}
-
-export function duplicateDeliveryError(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(409, 'duplicate_delivery', message, details);
-}
-
-export function unauthorizedError(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(401, 'unauthorized', message, details);
-}
-
-export function forbiddenError(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(403, 'forbidden', message, details);
-}
-
-export function serviceUnavailable(
-  message: string,
-  details?: Record<string, unknown>,
-): ApiError {
-  return new ApiError(503, 'service_unavailable', message, details);
-}
-
-export const errorHandler: ErrorRequestHandler = (
+export function errorHandler(
   error: unknown,
   req: Request,
   res: Response,
   _next: NextFunction,
-) => {
+): void {
   const normalized = normalizeExpressError(error);
-  const requestId = res.locals.requestId as string;
+  const requestId = res.locals['requestId'] as string | undefined;
 
   const log = {
     requestId,
@@ -167,18 +78,15 @@ export const errorHandler: ErrorRequestHandler = (
     console.warn('API error', log);
   }
 
-  const body: Record<string, unknown> = {
-    error: {
-      code: normalized.code,
-      message: normalized.message,
-      status: normalized.status,
-      requestId,
-    },
+  const errorBody: Record<string, unknown> = {
+    code: normalized.code,
+    message: normalized.message,
+    status: normalized.status,
+    requestId,
   };
-
-  if (normalized.details) {
-    (body.error as Record<string, unknown>).details = normalized.details;
+  if (normalized.details !== undefined) {
+    errorBody['details'] = normalized.details;
   }
 
-  res.status(normalized.status).json(body);
-};
+  res.status(normalized.status).json({ error: errorBody });
+}

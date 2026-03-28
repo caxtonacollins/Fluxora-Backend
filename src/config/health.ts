@@ -17,7 +17,7 @@ export interface DependencyHealth {
     name: string;
     status: HealthStatus;
     latency?: number; // milliseconds
-    error?: string;
+    error?: string | undefined;
     lastChecked: string; // ISO timestamp
 }
 
@@ -85,7 +85,8 @@ export class HealthCheckManager {
         const startTime = Date.now();
         try {
             const result = await checker.check();
-            const latency = Date.now() - startTime;
+            // Use checker-reported latency when provided; fall back to wall-clock measurement
+            const latency = result.latency ?? (Date.now() - startTime);
 
             const health: DependencyHealth = {
                 name: checker.name,
