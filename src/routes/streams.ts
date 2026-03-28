@@ -108,6 +108,7 @@ streamsRouter.get(
  */
 streamsRouter.post(
   '/',
+  authenticate,
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
     const { transactionHash } = req.body ?? {};
@@ -176,6 +177,7 @@ streamsRouter.post(
  */
 streamsRouter.delete(
   '/:id',
+  authenticate,
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
     const { id } = req.params;
