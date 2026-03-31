@@ -19,6 +19,7 @@
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.20.0",
     "stellar-sdk": "^13.3.0",
+    "ws": "^8.18.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
