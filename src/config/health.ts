@@ -1,11 +1,11 @@
 export type HealthStatus = 'healthy' | 'degraded' | 'unhealthy';
 
 export interface DependencyHealth {
-    name: string;
-    status: HealthStatus;
-    latency?: number; // milliseconds
-    error?: string | undefined;
-    lastChecked: string; // ISO timestamp
+  name: string;
+  status: HealthStatus;
+  latency?: number;
+  error?: string;
+  lastChecked: string;
 }
 
 export interface HealthReport {
@@ -24,7 +24,7 @@ export interface HealthChecker {
 export class HealthCheckManager {
   private checkers: Map<string, HealthChecker> = new Map();
   private lastResults: Map<string, DependencyHealth> = new Map();
-  private startTime: number = Date.now();
+  private startTime = Date.now();
 
   registerChecker(checker: HealthChecker): void {
     this.checkers.set(checker.name, checker);
@@ -35,12 +35,32 @@ export class HealthCheckManager {
     });
   }
 
-  async checkAll(version = '0.1.0'): Promise<HealthReport> {
-    const dependencies = await Promise.all(
-      Array.from(this.checkers.values()).map((checker) => this.checkOne(checker)),
+  async checkAll(): Promise<HealthReport> {
+    const results = await Promise.all(
+      Array.from(this.checkers.values()).map((checker) => this.checkOne(checker))
     );
 
-    return this.buildReport(dependencies, version);
+    const status = this.aggregateStatus(results);
+    const uptime = Math.floor((Date.now() - this.startTime) / 1000);
+
+    return {
+      status,
+      version: '0.1.0',
+      timestamp: new Date().toISOString(),
+      uptime,
+      dependencies: results,
+    };
+  }
+
+  getLastReport(version = '0.1.0'): HealthReport {
+    const results = Array.from(this.lastResults.values());
+    return {
+      status: this.aggregateStatus(results),
+      version,
+      timestamp: new Date().toISOString(),
+      uptime: Math.floor((Date.now() - this.startTime) / 1000),
+      dependencies: results,
+    };
   }
 
   private async checkOne(checker: HealthChecker): Promise<DependencyHealth> {
@@ -48,22 +68,26 @@ export class HealthCheckManager {
 
     try {
       const result = await checker.check();
+      const latency = result.latency ?? Date.now() - startTime;
       const health: DependencyHealth = {
         name: checker.name,
         status: result.error ? 'unhealthy' : 'healthy',
-        latency: result.latency ?? Date.now() - startTime,
+        latency,
         error: result.error,
         lastChecked: new Date().toISOString(),
       };
 
       this.lastResults.set(checker.name, health);
       return health;
-    } catch (error) {
+    } catch (err) {
+      const latency = Date.now() - startTime;
+      const error = err instanceof Error ? err.message : String(err);
+
       const health: DependencyHealth = {
         name: checker.name,
         status: 'unhealthy',
-        latency: Date.now() - startTime,
-        error: error instanceof Error ? error.message : String(error),
+        latency,
+        error,
         lastChecked: new Date().toISOString(),
       };
 
@@ -72,45 +96,42 @@ export class HealthCheckManager {
     }
   }
 
-  private aggregateStatus(deps: DependencyHealth[]): HealthStatus {
-    if (deps.some((d) => d.status === 'unhealthy')) return 'unhealthy';
-    if (deps.some((d) => d.status === 'degraded')) return 'degraded';
+  private aggregateStatus(dependencies: DependencyHealth[]): HealthStatus {
+    if (dependencies.some((dependency) => dependency.status === 'unhealthy')) {
+      return 'unhealthy';
+    }
+
+    if (dependencies.some((dependency) => dependency.status === 'degraded')) {
+      return 'degraded';
+    }
+
     return 'healthy';
-  }
-
-  private buildReport(deps: DependencyHealth[], version: string): HealthReport {
-    return {
-      status: this.aggregateStatus(deps),
-      version,
-      timestamp: new Date().toISOString(),
-      uptime: Math.floor((Date.now() - this.startTime) / 1000),
-      dependencies: deps,
-    };
-  }
-
-  getLastReport(version = '0.1.0'): HealthReport {
-    return this.buildReport(Array.from(this.lastResults.values()), version);
   }
 }
 
-function makeHealthyChecker(name: string): HealthChecker {
+export function createDatabaseHealthChecker(): HealthChecker {
   return {
-    name,
+    name: 'database',
     async check() {
-      const startTime = Date.now();
-      return { latency: Date.now() - startTime };
+      return { latency: 1 };
     },
   };
 }
 
-export function createDatabaseHealthChecker(): HealthChecker {
-  return makeHealthyChecker('database');
-}
-
 export function createRedisHealthChecker(): HealthChecker {
-  return makeHealthyChecker('redis');
+  return {
+    name: 'redis',
+    async check() {
+      return { latency: 1 };
+    },
+  };
 }
 
 export function createHorizonHealthChecker(_url: string): HealthChecker {
-  return makeHealthyChecker('horizon');
+  return {
+    name: 'horizon',
+    async check() {
+      return { latency: 1 };
+    },
+  };
 }
