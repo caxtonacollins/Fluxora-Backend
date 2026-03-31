@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+import { getStreamById } from '../db/client.js';
 import {
   validateDecimalString,
   validateAmountFields,
@@ -29,8 +30,26 @@ import { successResponse } from '../utils/response.js';
  */
 export const streamsRouter = Router();
 
-// Amount fields that must be decimal strings per serialization policy
+// Amount fields that must be decimal strinET /:ids per serialization policy
 const AMOUNT_FIELDS = ['depositAmount', 'ratePerSecond'] as const;
+export const streams: any[] = []
+
+type StreamsCursor = {
+  v: 1;
+  lastId: string;
+};
+
+type StreamListingDependencyState = 'healthy' | 'unavailable';
+type IdempotencyDependencyState = 'healthy' | 'unavailable';
+
+type NormalizedCreateStreamInput = {
+  sender: string;
+  recipient: string;
+  depositAmount: string;
+  ratePerSecond: string;
+  startTime: number;
+  endTime: number;
+};
 
 /**
  * Internal Stream type using BigInt for stroops
@@ -154,11 +173,17 @@ streamsRouter.get(
 
     if (!stream) throw notFound('Stream', id);
 
-    res.json({
-      ...stream,
-      depositAmount: formatFromStroops(stream.depositAmount),
-      ratePerSecond: formatFromStroops(stream.ratePerSecond),
-    });
+    try {
+      const stream = await getStreamById(id);
+      if (!stream) {
+        throw notFound('Stream', id);
+      }
+      res.json(stream);
+    } catch (error: any) {
+      if (error.name === 'ApiError') throw error; // Let the errorHandler catch 404s
+      warn('Database query failed', { id, error: error.message, requestId });
+      throw serviceUnavailable('Database query failed');
+    }
   })
 );
 
