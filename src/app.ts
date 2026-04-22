@@ -9,24 +9,28 @@ import { correlationIdMiddleware } from './middleware/correlationId.js';
 import { corsAllowlistMiddleware } from './middleware/cors.js';
 import { requestLoggerMiddleware } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { createRequestTimeoutMiddleware } from './middleware/requestProtection.js';
 import { isShuttingDown } from './shutdown.js';
 
 export interface AppOptions {
-  /** When true, mounts a /__test/error route that throws unconditionally. */
+  /** When true, mounts a /__test/error and /__test/timeout route. */
   includeTestRoutes?: boolean;
+  /** Milliseconds before a request is forcefully timed out. Defaults to 30000ms. */
+  requestTimeoutMs?: number;
 }
 
 export function createApp(options: AppOptions = {}): Express {
   const app = express();
+  const timeoutMs = options.requestTimeoutMs ?? 30000;
 
   app.use(express.json({ limit: '256kb' }));
-  // Correlation ID must be first so all subsequent middleware/routes have req.correlationId.
   app.use(correlationIdMiddleware);
   app.use(corsAllowlistMiddleware);
   app.use(requestLoggerMiddleware);
 
-  // During shutdown, tell clients to close the connection so keep-alive
-  // connections are not reused and the server can drain quickly.
+  // Attach AbortSignal and enforce timeout limits before hitting complex routes
+  app.use(createRequestTimeoutMiddleware(timeoutMs));
+
   app.use((_req: Request, res: Response, next: NextFunction) => {
     if (isShuttingDown()) {
       res.setHeader('Connection', 'close');
@@ -37,6 +41,27 @@ export function createApp(options: AppOptions = {}): Express {
   if (options.includeTestRoutes) {
     app.get('/__test/error', () => {
       throw new Error('Intentional test error');
+    });
+
+    app.get('/__test/timeout', async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          // Simulate a long running operation
+          const timer = setTimeout(() => resolve(), 5000);
+
+          // Listen to the abort signal to halt operation
+          req.abortSignal.addEventListener('abort', () => {
+            clearTimeout(timer);
+            reject(new Error('Operation aborted by signal'));
+          });
+        });
+
+        if (!res.headersSent) {
+          res.json({ success: true });
+        }
+      } catch (err) {
+        next(err);
+      }
     });
   }
 
