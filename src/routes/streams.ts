@@ -109,6 +109,7 @@ import {
 } from '../middleware/errorHandler.js';
 import { SerializationLogger, info, debug, warn } from '../utils/logger.js';
 import { recordAuditEvent } from '../lib/auditLog.js';
+import { CreateStreamSchema, parseBody, formatZodIssues } from '../validation/schemas.js';
 
 export const streamsRouter = Router();
 
@@ -162,6 +163,12 @@ export function setIdempotencyDependencyState(state: IdempotencyDependencyState)
   idempotencyDependency.state = state;
 }
 export function resetStreamIdempotencyStore(): void {
+  idempotencyStore.clear();
+}
+
+/** Reset streams array — test use only. */
+export function _resetStreams(): void {
+  streams.length = 0;
   idempotencyStore.clear();
 }
 
@@ -235,17 +242,24 @@ function parseIdempotencyKey(headerValue: unknown): string {
   return trimmed;
 }
 
-// ── Body normaliser (uses Zod-compatible path; also calls decimal validator) ──
+// ── Body normaliser (uses Zod schema validation with Stellar key checks) ──────
 
 function normalizeCreateStreamInput(body: Record<string, unknown>): NormalizedCreateStreamInput {
-  const { sender, recipient, depositAmount, ratePerSecond, startTime, endTime } = body;
+  // First, validate with Zod schema (includes Stellar public key validation)
+  const parseResult = parseBody(CreateStreamSchema, body);
+  
+  if (!parseResult.success) {
+    const formattedErrors = formatZodIssues(parseResult.issues);
+    const errorMessage = formattedErrors.map(e => e.message).join('; ');
+    throw new ApiError(
+      ApiErrorCode.VALIDATION_ERROR,
+      'Validation failed',
+      400,
+      formattedErrors.map(e => e.message).join('; ')
+    );
+  }
 
-  if (typeof sender !== 'string' || sender.trim() === '') {
-    throw validationError('sender must be a non-empty string');
-  }
-  if (typeof recipient !== 'string' || recipient.trim() === '') {
-    throw validationError('recipient must be a non-empty string');
-  }
+  const { sender, recipient, depositAmount, ratePerSecond, startTime, endTime } = parseResult.data;
 
   // Validate decimal fields — also catches number types passed as amounts
   const amountValidation = validateAmountFields(
@@ -275,17 +289,11 @@ function normalizeCreateStreamInput(body: Record<string, unknown>): NormalizedCr
 
   let validatedStartTime = Math.floor(Date.now() / 1000);
   if (startTime !== undefined) {
-    if (typeof startTime !== 'number' || !Number.isInteger(startTime) || startTime < 0) {
-      throw validationError('startTime must be a non-negative integer');
-    }
     validatedStartTime = startTime;
   }
 
   let validatedEndTime = 0;
   if (endTime !== undefined) {
-    if (typeof endTime !== 'number' || !Number.isInteger(endTime) || endTime < 0) {
-      throw validationError('endTime must be a non-negative integer');
-    }
     validatedEndTime = endTime;
   }
 
