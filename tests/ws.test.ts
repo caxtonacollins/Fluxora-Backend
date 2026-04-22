@@ -11,7 +11,7 @@
  *   - RPC dependency failure mode (hub continues operating when RPC is down)
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import http from 'http';
 import { WebSocket } from 'ws';
 import {
@@ -433,5 +433,63 @@ describe('WebSocket hub — RPC dependency failure modes', () => {
 
     expect(received).toHaveLength(1);
     ws.close();
+  });
+});
+
+describe('WebSocket hub — observability and metrics', () => {
+  let server: http.Server;
+  let hub: StreamHub;
+  let port: number;
+
+  beforeEach(async () => {
+    ({ server, hub, port } = await setup());
+  });
+
+  afterEach(async () => {
+    await teardown(server, hub);
+  });
+
+  it('emits structured connect and disconnect logs with metrics', async () => {
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => {});
+
+    const ws = await connect(port);
+
+    // Verify connect log
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    const connectLog = JSON.parse(consoleSpy.mock.calls[0][0] as string);
+    expect(connectLog.event).toBe('ws_connect');
+    expect(connectLog.connectionId).toBeDefined();
+    expect(connectLog.ip).toBeDefined();
+
+    // Exchange some messages to accumulate metrics
+    send(ws, { type: 'subscribe', streamId: 'metric-stream' });
+    await sleep(30);
+
+    hub.broadcast({
+      streamId: 'metric-stream',
+      eventId: 'metric-event',
+      payload: { amount: '100.55' },
+    });
+    await nextMessage(ws); // Wait to receive the broadcast
+
+    ws.close(1000, 'Test closure');
+    await sleep(50);
+
+    // Verify disconnect log
+    expect(consoleSpy).toHaveBeenCalledTimes(2);
+    const disconnectLog = JSON.parse(consoleSpy.mock.calls[1][0] as string);
+
+    expect(disconnectLog.event).toBe('ws_disconnect');
+    expect(disconnectLog.connectionId).toBe(connectLog.connectionId);
+    expect(disconnectLog.durationMs).toBeGreaterThanOrEqual(0);
+    expect(disconnectLog.code).toBe(1000);
+
+    // Check metrics accuracy
+    expect(disconnectLog.metrics.messagesReceived).toBe(1);
+    expect(disconnectLog.metrics.bytesReceived).toBeGreaterThan(0);
+    expect(disconnectLog.metrics.messagesSent).toBe(1);
+    expect(disconnectLog.metrics.bytesSent).toBeGreaterThan(0);
+
+    consoleSpy.mockRestore();
   });
 });

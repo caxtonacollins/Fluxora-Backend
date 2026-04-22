@@ -2,59 +2,58 @@
  * WebSocket Hub — stream update broadcast channel (#49).
  *
  * Responsibilities:
- *   - Track connected clients per stream subscription.
- *   - Rate-limit incoming messages per connection.
- *   - Reject oversized inbound payloads.
- *   - Deduplicate outbound events by (streamId, eventId) to prevent
- *     duplicate delivery on reconnect or RPC retry.
- *   - Broadcast stream update events to all subscribed clients.
+ * - Track connected clients per stream subscription.
+ * - Rate-limit incoming messages per connection.
+ * - Reject oversized inbound payloads.
+ * - Deduplicate outbound events by (streamId, eventId) to prevent
+ * duplicate delivery on reconnect or RPC retry.
+ * - Broadcast stream update events to all subscribed clients.
+ * - Track per-connection metrics and emit structured lifecycle logs.
  *
  * Protocol (JSON over WebSocket):
- *   Client → Server:  { type: "subscribe",   streamId: string }
- *   Client → Server:  { type: "unsubscribe", streamId: string }
- *   Server → Client:  { type: "stream_update", streamId: string, eventId: string, payload: unknown }
- *   Server → Client:  { type: "error", code: string, message: string }
+ * Client → Server:  { type: "subscribe",   streamId: string }
+ * Client → Server:  { type: "unsubscribe", streamId: string }
+ * Server → Client:  { type: "stream_update", streamId: string, eventId: string, payload: unknown }
+ * Server → Client:  { type: "error", code: string, message: string }
  */
 
 import { WebSocket, WebSocketServer } from 'ws';
-import type { IncomingMessage } from 'http';
-import type { Server } from 'http';
+import { randomUUID } from 'crypto';
+import type { IncomingMessage, Server } from 'http';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Maximum inbound message size in bytes. Payloads larger than this are rejected. */
 export const MAX_MESSAGE_BYTES = 4_096;
-
-/** Maximum inbound messages per client per rate-limit window. */
 export const RATE_LIMIT_MAX = 30;
-
-/** Rate-limit window duration in milliseconds. */
 export const RATE_LIMIT_WINDOW_MS = 10_000;
-
-/** Maximum number of (streamId, eventId) pairs kept in the dedup cache. */
 const DEDUP_CACHE_MAX = 10_000;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface StreamUpdateEvent {
   streamId: string;
-  /** Unique event identifier used for deduplication. */
   eventId: string;
   payload: unknown;
 }
 
+interface ConnectionMetrics {
+  messagesReceived: number;
+  messagesSent: number;
+  bytesReceived: number;
+  bytesSent: number;
+}
+
 interface ClientState {
+  id: string;
+  connectedAt: number;
+  ip: string;
+  metrics: ConnectionMetrics;
   subscriptions: Set<string>;
-  /** Timestamps of recent inbound messages for rate limiting. */
   messageTimestamps: number[];
 }
 
 // ── Dedup cache ───────────────────────────────────────────────────────────────
 
-/**
- * LRU-style dedup cache: tracks (streamId:eventId) pairs that have already
- * been broadcast. Evicts oldest entries when the cache exceeds DEDUP_CACHE_MAX.
- */
 class DedupCache {
   private readonly seen = new Map<string, true>();
 
@@ -66,14 +65,12 @@ class DedupCache {
     const key = `${streamId}:${eventId}`;
     if (this.seen.has(key)) return;
     if (this.seen.size >= DEDUP_CACHE_MAX) {
-      // Evict the oldest entry (Map preserves insertion order).
       const oldest = this.seen.keys().next().value;
       if (oldest !== undefined) this.seen.delete(oldest);
     }
     this.seen.set(key, true);
   }
 
-  /** Clear all entries (for testing). */
   clear(): void {
     this.seen.clear();
   }
@@ -84,37 +81,62 @@ class DedupCache {
 export class StreamHub {
   private readonly wss: WebSocketServer;
   private readonly clients = new Map<WebSocket, ClientState>();
-  /** streamId → set of subscribed clients */
   private readonly subscriptions = new Map<string, Set<WebSocket>>();
   private readonly dedup = new DedupCache();
 
   constructor(server: Server) {
     this.wss = new WebSocketServer({ server, path: '/ws/streams' });
-    this.wss.on('connection', (ws: WebSocket, _req: IncomingMessage) => {
-      this.onConnect(ws);
+    this.wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
+      this.onConnect(ws, req);
     });
   }
 
   // ── Connection lifecycle ───────────────────────────────────────────────────
 
-  private onConnect(ws: WebSocket): void {
-    this.clients.set(ws, { subscriptions: new Set(), messageTimestamps: [] });
+  private onConnect(ws: WebSocket, req: IncomingMessage): void {
+    const connectionId = randomUUID();
+    const ip = req.socket.remoteAddress || 'unknown';
+    const connectedAt = Date.now();
+
+    this.clients.set(ws, {
+      id: connectionId,
+      connectedAt,
+      ip,
+      metrics: { messagesReceived: 0, messagesSent: 0, bytesReceived: 0, bytesSent: 0 },
+      subscriptions: new Set(),
+      messageTimestamps: [],
+    });
+
+    console.info(
+      JSON.stringify({
+        event: 'ws_connect',
+        connectionId,
+        ip,
+        timestamp: new Date(connectedAt).toISOString(),
+      }),
+    );
 
     ws.on('message', (data, isBinary) => {
+      const state = this.clients.get(ws);
+
       if (isBinary) {
         this.sendError(ws, 'BINARY_NOT_SUPPORTED', 'Binary frames are not accepted');
         return;
       }
 
       const raw = data.toString('utf8');
+      const byteLength = Buffer.byteLength(raw, 'utf8');
 
-      // Oversized payload guard.
-      if (Buffer.byteLength(raw, 'utf8') > MAX_MESSAGE_BYTES) {
+      if (state) {
+        state.metrics.messagesReceived += 1;
+        state.metrics.bytesReceived += byteLength;
+      }
+
+      if (byteLength > MAX_MESSAGE_BYTES) {
         this.sendError(ws, 'PAYLOAD_TOO_LARGE', `Message exceeds ${MAX_MESSAGE_BYTES} bytes`);
         return;
       }
 
-      // Rate limit guard.
       if (!this.checkRateLimit(ws)) {
         this.sendError(ws, 'RATE_LIMIT_EXCEEDED', 'Too many messages; slow down');
         return;
@@ -123,11 +145,11 @@ export class StreamHub {
       this.handleMessage(ws, raw);
     });
 
-    ws.on('close', () => this.onDisconnect(ws));
-    ws.on('error', () => this.onDisconnect(ws));
+    ws.on('close', (code, reason) => this.onDisconnect(ws, code, reason));
+    ws.on('error', () => ws.close(1011, 'Internal Error'));
   }
 
-  private onDisconnect(ws: WebSocket): void {
+  private onDisconnect(ws: WebSocket, code: number, reason: Buffer): void {
     const state = this.clients.get(ws);
     if (!state) return;
 
@@ -138,7 +160,32 @@ export class StreamHub {
       }
     }
 
+    const durationMs = Date.now() - state.connectedAt;
+    console.info(
+      JSON.stringify({
+        event: 'ws_disconnect',
+        connectionId: state.id,
+        durationMs,
+        code,
+        reason: reason.toString('utf8'),
+        metrics: state.metrics,
+      }),
+    );
+
     this.clients.delete(ws);
+  }
+
+  // ── Network Transmission ───────────────────────────────────────────────────
+
+  private sendMessage(ws: WebSocket, message: string): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(message);
+      const state = this.clients.get(ws);
+      if (state) {
+        state.metrics.messagesSent += 1;
+        state.metrics.bytesSent += Buffer.byteLength(message, 'utf8');
+      }
+    }
   }
 
   // ── Rate limiting ──────────────────────────────────────────────────────────
@@ -216,18 +263,11 @@ export class StreamHub {
 
   // ── Broadcast ──────────────────────────────────────────────────────────────
 
-  /**
-   * Broadcast a stream update to all clients subscribed to `event.streamId`.
-   *
-   * Deduplication: if (streamId, eventId) has already been broadcast, the call
-   * is a no-op. This prevents duplicate delivery when the indexer retries or
-   * the RPC layer replays events.
-   */
   broadcast(event: StreamUpdateEvent): void {
     const { streamId, eventId, payload } = event;
 
     if (this.dedup.has(streamId, eventId)) {
-      return; // already delivered
+      return;
     }
     this.dedup.add(streamId, eventId);
 
@@ -237,31 +277,24 @@ export class StreamHub {
     const message = JSON.stringify({ type: 'stream_update', streamId, eventId, payload });
 
     for (const ws of subscribers) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(message);
-      }
+      this.sendMessage(ws, message);
     }
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
   private sendError(ws: WebSocket, code: string, message: string): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: 'error', code, message }));
-    }
+    this.sendMessage(ws, JSON.stringify({ type: 'error', code, message }));
   }
 
-  /** Number of currently connected clients (for health/metrics). */
   get clientCount(): number {
     return this.clients.size;
   }
 
-  /** Close the underlying WebSocket server (for graceful shutdown). */
   close(cb?: () => void): void {
     this.wss.close(cb);
   }
 
-  /** Reset dedup cache (for testing). */
   _resetDedup(): void {
     this.dedup.clear();
   }
@@ -280,7 +313,6 @@ export function getStreamHub(): StreamHub | null {
   return _hub;
 }
 
-/** Reset singleton (for testing). */
 export function resetStreamHub(): void {
   _hub = null;
 }
