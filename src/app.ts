@@ -10,6 +10,7 @@ import { corsAllowlistMiddleware } from './middleware/cors.js';
 import { requestLoggerMiddleware } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { isShuttingDown } from './shutdown.js';
+import { successResponse, errorResponse } from './utils/response.js';
 
 export interface AppOptions {
   /** When true, mounts a /__test/error route that throws unconditionally. */
@@ -47,17 +48,18 @@ export function createApp(options: AppOptions = {}): Express {
   app.use('/admin/dlq', dlqRouter);
 
   app.get('/', (_req: Request, res: Response) => {
-    res.json({
+    res.json(successResponse({
       name: 'Fluxora API',
       version: '0.1.0',
       docs: 'Programmable treasury streaming on Stellar.',
-    });
+    }));
   });
 
-  app.use((_req: Request, res: Response) => {
-    res.status(404).json({
-      error: { code: 'NOT_FOUND', message: 'The requested resource was not found' },
-    });
+  app.use((req: Request, res: Response) => {
+    const requestId = (req as any).id as string | undefined;
+    res.status(404).json(
+      errorResponse('NOT_FOUND', 'The requested resource was not found', undefined, requestId)
+    );
   });
 
   app.use(errorHandler);

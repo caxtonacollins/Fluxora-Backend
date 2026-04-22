@@ -110,6 +110,7 @@ import {
 import { SerializationLogger, info, debug, warn } from '../utils/logger.js';
 import { recordAuditEvent } from '../lib/auditLog.js';
 import { CreateStreamSchema, parseBody, formatZodIssues } from '../validation/schemas.js';
+import { successResponse } from '../utils/response.js';
 
 export const streamsRouter = Router();
 
@@ -348,7 +349,7 @@ streamsRouter.get(
     if (includeTotal)  response.total       = sortedStreams.length;
     if (nextCursor)    response.next_cursor = nextCursor;
 
-    res.json(response);
+    res.json(successResponse(response, requestId));
   }),
 );
 
@@ -360,10 +361,11 @@ streamsRouter.get(
   '/:id',
   asyncHandler(async (req: any, res: any) => {
     const { id } = req.params;
+    const requestId = req.id as string | undefined;
     debug('Fetching stream', { id });
     const stream = streams.find((s) => s.id === id);
     if (!stream) throw notFound('Stream', id);
-    res.json({ stream });
+    res.json(successResponse({ stream }, requestId));
   }),
 );
 
@@ -410,7 +412,7 @@ streamsRouter.post(
       info('Replaying idempotent stream creation', { requestId, idempotencyKey, streamId: existingResponse.body.id });
       res.set('Idempotency-Key', idempotencyKey);
       res.set('Idempotency-Replayed', 'true');
-      res.status(existingResponse.statusCode).json(existingResponse.body);
+      res.status(existingResponse.statusCode).json(successResponse(existingResponse.body, requestId));
       return;
     }
 
@@ -434,7 +436,7 @@ streamsRouter.post(
 
     res.set('Idempotency-Key', idempotencyKey);
     res.set('Idempotency-Replayed', 'false');
-    res.status(201).json(stream);
+    res.status(201).json(successResponse(stream, requestId));
   }),
 );
 
@@ -467,6 +469,6 @@ streamsRouter.delete(
     info('Stream cancelled', { id });
     recordAuditEvent('STREAM_CANCELLED', 'stream', id as string, (req as any).correlationId);
 
-    res.json({ message: 'Stream cancelled', id });
+    res.json(successResponse({ message: 'Stream cancelled', id }, requestId));
   }),
 );
