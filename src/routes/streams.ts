@@ -111,6 +111,9 @@ import {
 import { SerializationLogger, info, debug, warn } from '../utils/logger.js';
 import { recordAuditEvent } from '../lib/auditLog.js';
 import { authenticate, requireAuth } from '../middleware/auth.js';
+import { successResponse } from '../utils/response.js';
+import { parseBody, formatZodIssues, CreateStreamSchema } from '../validation/schemas.js';
+import { assertValidApiTransition, type ApiStreamStatus } from '../streams/status.js';
 
 export const streamsRouter = Router();
 
@@ -129,7 +132,7 @@ export interface Stream {
 
 type StreamsCursor = { v: 1; lastId: string };
 type StreamListingDependencyState = 'healthy' | 'unavailable';
-type IdempotencyDependencyState  = 'healthy' | 'unavailable';
+type IdempotencyDependencyState = 'healthy' | 'unavailable';
 
 type NormalizedCreateStreamInput = {
   sender: string;
@@ -154,8 +157,8 @@ export const streams: Stream[] = [];
 
 // ── Dependency state (injectable for tests) ───────────────────────────────────
 const streamListingDependency = { state: 'healthy' as StreamListingDependencyState };
-const idempotencyDependency   = { state: 'healthy' as IdempotencyDependencyState };
-const idempotencyStore        = new Map<string, StoredIdempotentResponse>();
+const idempotencyDependency = { state: 'healthy' as IdempotencyDependencyState };
+const idempotencyStore = new Map<string, StoredIdempotentResponse>();
 
 export function setStreamListingDependencyState(state: StreamListingDependencyState): void {
   streamListingDependency.state = state;
@@ -224,7 +227,7 @@ function parseIncludeTotal(includeTotalParam: unknown): boolean {
   if (Array.isArray(includeTotalParam) || typeof includeTotalParam !== 'string') {
     throw validationError('include_total must be true or false');
   }
-  if (includeTotalParam === 'true')  return true;
+  if (includeTotalParam === 'true') return true;
   if (includeTotalParam === 'false') return false;
   throw validationError('include_total must be true or false');
 }
@@ -248,7 +251,7 @@ function parseIdempotencyKey(headerValue: unknown): string {
 function normalizeCreateStreamInput(body: Record<string, unknown>): NormalizedCreateStreamInput {
   // First, validate with Zod schema (includes Stellar public key validation)
   const parseResult = parseBody(CreateStreamSchema, body);
-  
+
   if (!parseResult.success) {
     const formattedErrors = formatZodIssues(parseResult.issues);
     const errorMessage = formattedErrors.map(e => e.message).join('; ');
@@ -321,9 +324,9 @@ function fingerprintCreateStreamInput(input: NormalizedCreateStreamInput): strin
 streamsRouter.get(
   '/',
   asyncHandler(async (req: any, res: any) => {
-    const requestId    = req.id as string | undefined;
-    const limit        = parseLimit(req.query.limit);
-    const cursor       = parseCursor(req.query.cursor);
+    const requestId = req.id as string | undefined;
+    const limit = parseLimit(req.query.limit);
+    const cursor = parseCursor(req.query.cursor);
     const includeTotal = parseIncludeTotal(req.query.include_total);
 
     if (streamListingDependency.state !== 'healthy') {
@@ -332,11 +335,11 @@ streamsRouter.get(
     }
 
     const sortedStreams = [...streams].sort((a, b) => a.id.localeCompare(b.id));
-    const startIndex   = cursor ? sortedStreams.findIndex((s) => s.id > cursor.lastId) : 0;
-    const normStart    = startIndex === -1 ? sortedStreams.length : startIndex;
-    const pageStreams   = sortedStreams.slice(normStart, normStart + limit);
-    const hasMore      = normStart + pageStreams.length < sortedStreams.length;
-    const nextCursor   = hasMore && pageStreams.length > 0
+    const startIndex = cursor ? sortedStreams.findIndex((s) => s.id > cursor.lastId) : 0;
+    const normStart = startIndex === -1 ? sortedStreams.length : startIndex;
+    const pageStreams = sortedStreams.slice(normStart, normStart + limit);
+    const hasMore = normStart + pageStreams.length < sortedStreams.length;
+    const nextCursor = hasMore && pageStreams.length > 0
       ? encodeCursor(pageStreams[pageStreams.length - 1]!.id)
       : undefined;
 
@@ -346,8 +349,8 @@ streamsRouter.get(
       streams: pageStreams,
       has_more: hasMore,
     };
-    if (includeTotal)  response.total       = sortedStreams.length;
-    if (nextCursor)    response.next_cursor = nextCursor;
+    if (includeTotal) response.total = sortedStreams.length;
+    if (nextCursor) response.next_cursor = nextCursor;
 
     res.json(successResponse(response, requestId));
   }),
@@ -378,7 +381,7 @@ streamsRouter.post(
   authenticate,
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
-    const requestId      = (req as any).id as string | undefined;
+    const requestId = (req as any).id as string | undefined;
     const idempotencyKey = parseIdempotencyKey(req.header('Idempotency-Key'));
 
     if (idempotencyDependency.state !== 'healthy') {
@@ -405,7 +408,7 @@ streamsRouter.post(
     }
 
     const requestFingerprint = fingerprintCreateStreamInput(normalizedInput);
-    const existingResponse   = idempotencyStore.get(idempotencyKey);
+    const existingResponse = idempotencyStore.get(idempotencyKey);
 
     if (existingResponse) {
       if (existingResponse.requestFingerprint !== requestFingerprint) {
@@ -418,16 +421,16 @@ streamsRouter.post(
       return;
     }
 
-    const id     = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const id = `stream-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const stream: Stream = {
       id,
-      sender:        normalizedInput.sender,
-      recipient:     normalizedInput.recipient,
+      sender: normalizedInput.sender,
+      recipient: normalizedInput.recipient,
       depositAmount: normalizedInput.depositAmount,
       ratePerSecond: normalizedInput.ratePerSecond,
-      startTime:     normalizedInput.startTime,
-      endTime:       normalizedInput.endTime,
-      status:        'active',
+      startTime: normalizedInput.startTime,
+      endTime: normalizedInput.endTime,
+      status: 'active',
     };
 
     streams.push(stream);
@@ -457,7 +460,7 @@ streamsRouter.delete(
   authenticate,
   requireAuth,
   asyncHandler(async (req: Request, res: Response) => {
-    const { id }    = req.params;
+    const { id } = req.params;
     const requestId = (req as any).id as string | undefined;
 
     debug('Deleting stream', { id });
@@ -492,7 +495,7 @@ streamsRouter.delete(
 streamsRouter.patch(
   '/:id/status',
   asyncHandler(async (req: Request, res: Response) => {
-    const { id }    = req.params;
+    const { id } = req.params;
     const requestId = (req as any).id as string | undefined;
     const { status: newStatus } = req.body ?? {};
 
