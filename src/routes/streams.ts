@@ -435,6 +435,12 @@ streamsRouter.post(
 
     SerializationLogger.amountSerialized(2, requestId);
     info('Stream created', { id, requestId, idempotencyKey });
+    recordAuditEvent('STREAM_CREATED', 'stream', id, (req as any).correlationId, {
+      depositAmount: normalizedInput.depositAmount,
+      ratePerSecond: normalizedInput.ratePerSecond,
+      sender: normalizedInput.sender,
+      recipient: normalizedInput.recipient,
+    });
 
     res.set('Idempotency-Key', idempotencyKey);
     res.set('Idempotency-Replayed', 'false');
