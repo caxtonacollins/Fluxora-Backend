@@ -89,6 +89,8 @@ export interface StreamUpdateEvent {
   streamId: string;
   eventId: string;
   payload: unknown;
+  /** Ledger this event originated from — used to suppress rolled-back events. */
+  ledger?: number;
 }
 
 /** Observable counters for backpressure events. Exposed for metrics/tests. */
