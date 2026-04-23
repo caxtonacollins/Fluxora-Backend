@@ -349,6 +349,49 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Cancel a stream
+      operationId: cancelStream
+      tags:
+        - Streams
+      parameters:
+        - name: streamId
+          in: path
+          required: true
+          description: Stream identifier
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stream cancelled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Stream cancelled
+                  id:
+                    type: string
+        '404':
+          description: Stream not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Stream already cancelled or completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 256 KiB limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       summary: Cancel a stream
@@ -440,6 +483,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Forbidden (insufficient permissions)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: Request body exceeds 256 KiB limit
           content:
             application/json:
               schema:
@@ -1224,31 +1273,32 @@ components:
           required:
             - code
             - message
-            - status
           properties:
             code:
               type: string
               description: Machine-readable error code
-              example: invalid_stellar_address
+              enum:
+                - VALIDATION_ERROR
+                - NOT_FOUND
+                - CONFLICT
+                - UNAUTHORIZED
+                - FORBIDDEN
+                - PAYLOAD_TOO_LARGE
+                - TOO_MANY_REQUESTS
+                - SERVICE_UNAVAILABLE
+                - INTERNAL_ERROR
+              example: PAYLOAD_TOO_LARGE
             message:
               type: string
               description: Human-readable error message
-              example: 'sender must be a valid Stellar public key (starts with G, 56 chars)'
-            status:
-              type: integer
-              description: HTTP status code
-              example: 400
+              example: Request body exceeds the 262144-byte limit
             requestId:
               type: string
-              description: Correlation ID for debugging
+              description: Correlation ID for log triage
               example: 550e8400-e29b-41d4-a716-446655440000
             details:
-              type: object
+              description: Additional error context (field-level validation errors, etc.)
               nullable: true
-              description: Additional error context
-              example:
-                field: sender
-                value: invalid
 
     # Webhook-related schemas
     QueueWebhookRequest:
