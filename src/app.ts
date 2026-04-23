@@ -5,11 +5,13 @@ import { healthRouter } from './routes/health.js';
 import { indexerRouter } from './routes/indexer.js';
 import { auditRouter } from './routes/audit.js';
 import { dlqRouter } from './routes/dlq.js';
+import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { correlationIdMiddleware } from './middleware/correlationId.js';
 import { corsAllowlistMiddleware } from './middleware/cors.js';
 import { requestLoggerMiddleware } from './middleware/requestLogger.js';
 import { errorHandler } from './middleware/errorHandler.js';
+import { bodySizeLimitMiddleware, BODY_LIMIT_BYTES } from './middleware/requestProtection.js';
 import { isShuttingDown } from './shutdown.js';
 
 export interface AppOptions {
@@ -20,7 +22,8 @@ export interface AppOptions {
 export function createApp(options: AppOptions = {}): Express {
   const app = express();
 
-  app.use(express.json({ limit: '256kb' }));
+  app.use(bodySizeLimitMiddleware);
+  app.use(express.json({ limit: BODY_LIMIT_BYTES }));
   // Correlation ID must be first so all subsequent middleware/routes have req.correlationId.
   app.use(correlationIdMiddleware);
   app.use(corsAllowlistMiddleware);
@@ -42,7 +45,9 @@ export function createApp(options: AppOptions = {}): Express {
   }
 
   app.use('/health', healthRouter);
+  app.use('/api/auth', authRouter);
   app.use('/api/streams', streamsRouter);
+  app.use('/api/admin', adminRouter);
   app.use('/internal/indexer', indexerRouter);
   app.use('/api/audit', auditRouter);
   app.use('/admin/dlq', dlqRouter);
