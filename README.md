@@ -249,7 +249,12 @@ All messages are JSON. The server only sends; clients may send subscription mess
 ### Operator observability
 
 - `GET /health` includes `wsConnections` — the count of currently connected clients.
-- Connect/disconnect events are logged as structured JSON with `connectionId` and `total`.
+- Connect/disconnect events are logged natively to standard output as structured JSON.
+- **Connection Lifecycle Logs:** - On connection, a `ws_connect` event is emitted containing the assigned `connectionId` and the client's `ip`.
+  - On termination, a `ws_disconnect` event is emitted containing the `connectionId`, connection `durationMs`, closure `code`, closure `reason`, and a `metrics` payload.
+- **Per-Connection Metrics:** Included in the `ws_disconnect` log, the `metrics` object tracks:
+  - `messagesReceived` / `messagesSent`
+  - `bytesReceived` / `bytesSent` (measured purely as utf-8 string buffers to preserve decimal-string serialization guarantees).
 
 ### Manual verification
 
